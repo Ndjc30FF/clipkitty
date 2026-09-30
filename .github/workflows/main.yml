@@ -1,4 +1,4 @@
-name: Clips Studio
+name: Clips Studio - Remote Tailscale
 
 on:
   workflow_dispatch:
@@ -13,97 +13,362 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Checkout Clips Studio
+
+      # ============================================================
+      # STEP 1 — CHECK GITHUB SECRET
+      # ============================================================
+      - name: "1️⃣ Check Tailscale Secret"
+        env:
+          TS_AUTH: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          echo "=========================================="
+          echo "CHECKING TAILSCALE SECRET"
+          echo "=========================================="
+
+          if [ -z "$TS_AUTH" ]; then
+            echo "❌ FAILED: TAILSCALE_AUTHKEY is EMPTY"
+            echo ""
+            echo "Check:"
+            echo "GitHub → Settings → Secrets and variables → Actions"
+            echo ""
+            echo "Required secret name:"
+            echo "TAILSCALE_AUTHKEY"
+            exit 1
+          fi
+
+          echo "✅ PASSED: GitHub supplied the Tailscale secret"
+          echo "The secret itself will NOT be printed."
+
+      # ============================================================
+      # STEP 2 — CHECKOUT CLIPS STUDIO
+      # ============================================================
+      - name: "2️⃣ Checkout Clips Studio"
         uses: actions/checkout@v4
         with:
           repository: ColinGPT9/clips-studio
 
-      - name: Connect Tailscale
+      - name: "2️⃣ Verify Repository"
+        run: |
+          echo "=========================================="
+          echo "CHECKING CLIPS STUDIO REPOSITORY"
+          echo "=========================================="
+
+          if [ ! -f "docker-compose.yml" ] && [ ! -f "compose.yml" ]; then
+            echo "❌ FAILED: Docker Compose file not found"
+            ls -la
+            exit 1
+          fi
+
+          echo "✅ PASSED: Clips Studio repository found"
+
+      # ============================================================
+      # STEP 3 — TAILSCALE
+      # ============================================================
+      - name: "3️⃣ Connect Tailscale"
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.tskey-auth-kvgELDpjx111CNTRL-Av4AoeX5UqJWG1B1atQrqJbZw7hmLuTqa }}
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          log-mode: normal
 
-      - name: Show Tailscale information
+      # ============================================================
+      # STEP 4 — VERIFY TAILSCALE
+      # ============================================================
+      - name: "4️⃣ Verify Tailscale Connection"
         run: |
-          echo "Tailscale IP:"
-          tailscale ip -4
+          echo "=========================================="
+          echo "VERIFYING TAILSCALE"
+          echo "=========================================="
 
-          echo "Tailscale status:"
+          echo ""
+          echo "--- Tailscale version ---"
+          tailscale version
+
+          echo ""
+          echo "--- Tailscale status ---"
           tailscale status
 
-      - name: Install Ollama
+          echo ""
+          echo "--- Tailscale IPv4 ---"
+
+          TS_IP=$(tailscale ip -4)
+
+          if [ -z "$TS_IP" ]; then
+            echo "❌ FAILED: No Tailscale IPv4 address"
+            exit 1
+          fi
+
+          echo "✅ PASSED"
+          echo ""
+          echo "RUNNER TAILSCALE IP:"
+          echo "$TS_IP"
+
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # STEP 5 — INSTALL OLLAMA
+      # ============================================================
+      - name: "5️⃣ Install Ollama"
         run: |
+          echo "=========================================="
+          echo "INSTALLING OLLAMA"
+          echo "=========================================="
+
           curl -fsSL https://ollama.com/install.sh | sh
 
-          sudo systemctl stop ollama || true
+          if ! command -v ollama >/dev/null 2>&1; then
+            echo "❌ FAILED: Ollama installation failed"
+            exit 1
+          fi
 
-          OLLAMA_HOST=0.0.0.0:11434 ollama serve > /tmp/ollama.log 2>&1 &
+          echo "✅ PASSED: Ollama installed"
+
+      # ============================================================
+      # STEP 6 — START OLLAMA
+      # ============================================================
+      - name: "6️⃣ Start Ollama"
+        run: |
+          echo "=========================================="
+          echo "STARTING OLLAMA"
+          echo "=========================================="
+
+          pkill ollama || true
+
+          export OLLAMA_HOST="0.0.0.0:11434"
+
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
 
           echo "Waiting for Ollama..."
 
-          until curl -sf http://127.0.0.1:11434/api/tags >/dev/null; do
+          for i in {1..60}; do
+            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null; then
+              echo "✅ PASSED: Ollama is running"
+              exit 0
+            fi
+
             sleep 2
           done
 
-          echo "Ollama is ready."
+          echo "❌ FAILED: Ollama did not start"
+          echo ""
+          echo "--- Ollama log ---"
+          cat /tmp/ollama.log || true
+          exit 1
+
+      # ============================================================
+      # STEP 7 — DOWNLOAD GEMMA
+      # ============================================================
+      - name: "7️⃣ Download Gemma 7B"
+        run: |
+          echo "=========================================="
+          echo "DOWNLOADING GEMMA 7B"
+          echo "=========================================="
 
           ollama pull gemma:7b
 
-      - name: Start Clips Studio
+          echo ""
+          echo "--- Installed models ---"
+          ollama list
+
+          if ollama list | grep -q "gemma"; then
+            echo "✅ PASSED: Gemma model available"
+          else
+            echo "❌ FAILED: Gemma model not found"
+            exit 1
+          fi
+
+      # ============================================================
+      # STEP 8 — CHECK DOCKER
+      # ============================================================
+      - name: "8️⃣ Check Docker"
         run: |
-          docker compose pull
+          echo "=========================================="
+          echo "CHECKING DOCKER"
+          echo "=========================================="
+
+          docker --version
+          docker compose version
+
+          echo "✅ PASSED: Docker available"
+
+      # ============================================================
+      # STEP 9 — START CLIPS STUDIO
+      # ============================================================
+      - name: "9️⃣ Start Clips Studio"
+        run: |
+          echo "=========================================="
+          echo "STARTING CLIPS STUDIO"
+          echo "=========================================="
+
+          docker compose config
+
+          echo ""
+          echo "Starting containers..."
 
           docker compose up -d --scale ollama=0
 
-          echo "Waiting for Clips Studio..."
+          echo ""
+          echo "Docker containers:"
+          docker compose ps
 
-          for i in {1..60}; do
+      # ============================================================
+      # STEP 10 — WAIT FOR WEB UI
+      # ============================================================
+      - name: "🔟 Check Clips Studio UI"
+        run: |
+          echo "=========================================="
+          echo "CHECKING CLIPS STUDIO UI"
+          echo "=========================================="
+
+          echo "Waiting for port 5173..."
+
+          for i in {1..90}; do
+
             if curl -sf http://127.0.0.1:5173 >/dev/null; then
-              echo "UI is ready."
-              break
+              echo ""
+              echo "✅ PASSED: Clips Studio UI is running"
+              echo "Local address:"
+              echo "http://127.0.0.1:5173"
+              exit 0
             fi
+
+            echo "Attempt $i/90..."
             sleep 2
           done
 
-      - name: Verify network access
+          echo ""
+          echo "❌ FAILED: Clips Studio UI did not respond"
+          echo ""
+          echo "--- Docker status ---"
+          docker compose ps
+
+          echo ""
+          echo "--- Docker logs ---"
+          docker compose logs --tail=200
+
+          exit 1
+
+      # ============================================================
+      # STEP 11 — TEST TAILSCALE IP
+      # ============================================================
+      - name: "1️⃣1️⃣ Test UI Through Tailscale"
         run: |
-          TS_IP=$(tailscale ip -4)
-
-          echo "======================================"
-          echo "Tailscale IP: $TS_IP"
-          echo "======================================"
+          echo "=========================================="
+          echo "TESTING UI THROUGH TAILSCALE"
+          echo "=========================================="
 
           echo ""
-          echo "Local UI:"
-          curl -I http://127.0.0.1:5173 || true
+          echo "Tailscale IP:"
+          echo "$TAILSCALE_IP"
 
           echo ""
-          echo "Tailscale UI:"
-          curl -I http://$TS_IP:5173 || true
+          echo "Testing:"
+          echo "http://$TAILSCALE_IP:5173"
 
           echo ""
-          echo "Engine:"
-          curl -I http://127.0.0.1:8765 || true
 
-          echo ""
-          echo "Ollama:"
-          curl -s http://127.0.0.1:11434/api/tags || true
+          HTTP_CODE=$(curl \
+            --connect-timeout 10 \
+            --max-time 20 \
+            -s \
+            -o /tmp/clips-response.txt \
+            -w "%{http_code}" \
+            "http://$TAILSCALE_IP:5173" || true)
 
-          echo ""
-          echo "======================================"
-          echo "OPEN THIS:"
-          echo "http://$TS_IP:5173"
-          echo "======================================"
+          echo "HTTP response:"
+          echo "$HTTP_CODE"
 
-      - name: Keep Clips Studio running
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
+            echo ""
+            echo "✅ PASSED: UI reachable through Tailscale"
+          else
+            echo ""
+            echo "❌ FAILED: UI NOT reachable through Tailscale"
+            echo ""
+            echo "This means Clips Studio works locally,"
+            echo "but the Tailscale network cannot reach port 5173."
+            echo ""
+            echo "Docker port information:"
+            docker compose ps
+            docker ps --format "table {{.Names}}\t{{.Ports}}"
+            exit 1
+          fi
+
+      # ============================================================
+      # STEP 12 — CHECK ENGINE
+      # ============================================================
+      - name: "1️⃣2️⃣ Check Clips Studio Engine"
         run: |
-          TS_IP=$(tailscale ip -4)
+          echo "=========================================="
+          echo "CHECKING CLIPS STUDIO ENGINE"
+          echo "=========================================="
 
+          if curl -sf --max-time 10 http://127.0.0.1:8765 >/dev/null; then
+            echo "✅ PASSED: Engine responds on port 8765"
+          else
+            echo "⚠️ WARNING: Engine did not respond on port 8765"
+            echo "The UI may still be running."
+          fi
+
+      # ============================================================
+      # STEP 13 — CHECK OLLAMA
+      # ============================================================
+      - name: "1️⃣3️⃣ Check Ollama API"
+        run: |
+          echo "=========================================="
+          echo "CHECKING OLLAMA API"
+          echo "=========================================="
+
+          echo ""
+          echo "Ollama models:"
+          curl -sf http://127.0.0.1:11434/api/tags
+
+          echo ""
+
+          if curl -sf http://127.0.0.1:11434/api/tags >/dev/null; then
+            echo "✅ PASSED: Ollama API responds"
+          else
+            echo "❌ FAILED: Ollama API unavailable"
+            exit 1
+          fi
+
+      # ============================================================
+      # STEP 14 — FINAL INFORMATION
+      # ============================================================
+      - name: "1️⃣4️⃣ FINAL CONNECTION INFORMATION"
+        run: |
+          echo ""
+          echo "======================================================"
+          echo "          🎬 CLIPS STUDIO IS READY"
+          echo "======================================================"
+          echo ""
+          echo "STATUS:"
+          echo "  Tailscale:       ✅"
+          echo "  Clips Studio UI: ✅"
+          echo "  Tailscale UI:    ✅"
+          echo "  Ollama:          ✅"
+          echo ""
+          echo "======================================================"
+          echo "OPEN THIS ADDRESS ON YOUR LAPTOP:"
+          echo ""
+          echo "http://$TAILSCALE_IP:5173"
+          echo ""
+          echo "======================================================"
+          echo ""
+          echo "Tailscale IP:"
+          echo "$TAILSCALE_IP"
+          echo ""
+          echo "The GitHub runner will stay alive until"
+          echo "the workflow is stopped or times out."
+          echo "======================================================"
+
+      # ============================================================
+      # STEP 15 — KEEP RUNNING
+      # ============================================================
+      - name: "1️⃣5️⃣ Keep Clips Studio Alive"
+        run: |
           echo "Clips Studio is running."
-          echo "Web UI: http://$TS_IP:5173"
-          echo "Engine: http://$TS_IP:8765"
 
           while true; do
-            echo "[$(date)] Clips Studio active"
+            echo "[$(date)] ❤️ Clips Studio active"
             sleep 300
           done
