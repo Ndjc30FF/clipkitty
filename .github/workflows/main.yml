@@ -1,0 +1,78 @@
+name: Clips Studio (Gemma 7B Cached)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-gemma-studio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ColinGPT9/clips-studio
+
+      - name: Cache Ollama Models (Gemma 7B)
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-gemma-7b-cache
+
+      - name: Install & Launch Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          
+          # Configure Ollama concurrency settings
+          export OLLAMA_MAX_LOADED_MODELS=2
+          export OLLAMA_NUM_PARALLEL=2
+          
+          # Start daemon in background
+          ollama serve &
+          sleep 3
+          
+          # Pull Gemma 7B (Restored instantly from cache on subsequent runs)
+          echo "Verifying / Pulling Gemma 7B..."
+          ollama pull gemma:7b
+
+      - name: Connect Tailscale Tunnel
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscaled --state=mem: &
+          sleep 2
+          
+          # Connect to Tailnet using secret key
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="clips-gemma-$GITHUB_RUN_ID"
+          
+          TS_IP=$(tailscale ip -4)
+          if [ -z "$TS_IP" ]; then
+            echo "Tailscale IP acquisition failed."
+            exit 1
+          fi
+          
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Launch Web Stack via Docker Compose
+        run: |
+          # Direct container networking to host Ollama instance
+          export OLLAMA_HOST="http://172.17.0.1:11434"
+          docker compose up -d
+
+      - name: Display Web Access Link & Keep Alive
+        run: |
+          echo ""
+          echo "=================================================="
+          echo "       CLIPS STUDIO WEB UI IS READY              "
+          echo "=================================================="
+          echo " Open Browser:   http://$TAILSCALE_IP:5173        "
+          echo " Tailscale IP:   $TAILSCALE_IP                    "
+          echo " AI Engine:      gemma:7b (Ollama)                "
+          echo "=================================================="
+          echo ""
+          
+          # Keep session alive
+          while true; do
+            echo "[$(date)] Session Active with Gemma 7B..."
+            sleep 300
+          done
