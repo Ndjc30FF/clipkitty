@@ -1,4 +1,3 @@
-```yaml
 name: Clips Studio (Gemma 7B via Tailscale)
 
 on:
@@ -369,4 +368,4 @@ jobs:
 
           echo "Disconnecting Tailscale..."
           sudo tailscale logout || true
-```
+
