@@ -1,3 +1,4 @@
+```yaml
 name: Clips Studio (Gemma 7B via Tailscale)
 
 on:
@@ -52,39 +53,44 @@ jobs:
           echo "=========================================="
           echo "Installing Ollama..."
           echo "=========================================="
-          
+
           curl -fsSL https://ollama.com/install.sh | sh
-          
+
           echo ""
           echo "Configuring Ollama environment..."
+
           export OLLAMA_HOST="0.0.0.0:11434"
           export OLLAMA_MAX_LOADED_MODELS=2
           export OLLAMA_NUM_PARALLEL=2
-          
+
           echo "Starting Ollama service..."
           ollama serve > /tmp/ollama.log 2>&1 &
           sleep 3
-          
+
           echo "Waiting for Ollama API to be ready..."
+
           for i in {1..30}; do
             if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
               echo "✅ Ollama is ready"
               break
             fi
-            echo "   Attempt $i/30..."
+
+            echo "Attempt $i/30..."
             sleep 1
           done
-          
+
           echo ""
           echo "Pulling Gemma 7B model..."
           ollama pull gemma:7b
-          
+
           echo ""
           echo "Verifying model..."
-          curl -s http://localhost:11434/api/tags | grep -q "gemma" && echo "✅ Gemma 7B loaded" || echo "⚠️ Gemma 7B may not be loaded"
+          curl -s http://localhost:11434/api/tags | grep -q "gemma" \
+            && echo "✅ Gemma 7B loaded" \
+            || echo "⚠️ Gemma 7B may not be loaded"
 
       # ============================================================
-      # 5. INSTALL TAILSCALE (Official Action)
+      # 5. INSTALL TAILSCALE
       # ============================================================
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
@@ -100,17 +106,17 @@ jobs:
           echo "=========================================="
           echo "Verifying Tailscale Connection"
           echo "=========================================="
-          
+
           TS_IP=$(tailscale ip -4)
-          
+
           if [ -z "$TS_IP" ]; then
             echo "❌ ERROR: Failed to get Tailscale IP"
             exit 1
           fi
-          
+
           echo "✅ Tailscale IP: $TS_IP"
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
+
           echo ""
           echo "Tailscale Status:"
           tailscale status
@@ -123,162 +129,189 @@ jobs:
           echo "=========================================="
           echo "Creating Docker Compose Override"
           echo "=========================================="
-          
+
           cat > docker-compose.override.yml <<'EOF'
-version: '3.8'
-services:
-  ui:
-    ports:
-      - "0.0.0.0:5173:5173"
-    environment:
-      - VITE_BACKEND_URL=http://localhost:8765
-  backend:
-    ports:
-      - "0.0.0.0:8765:8765"
-EOF
-          
+          services:
+            ui:
+              ports:
+                - "5173:5173"
+              environment:
+                - VITE_BACKEND_URL=http://localhost:8765
+
+            backend:
+              ports:
+                - "8765:8765"
+          EOF
+
           echo "✅ Override file created"
           cat docker-compose.override.yml
 
       # ============================================================
-      # 8. START CLIPS STUDIO STACK
+      # 8. CLEAN POSSIBLE OLD DOCKER CONTAINERS
+      # ============================================================
+      - name: Clean Docker Port Conflicts
+        run: |
+          echo "=========================================="
+          echo "Cleaning Possible Docker Port Conflicts"
+          echo "=========================================="
+
+          docker compose down --remove-orphans || true
+
+          docker ps -q | xargs -r docker stop || true
+
+          echo "Checking ports..."
+
+          sudo ss -lntp | grep -E ':(5173|8765)' || true
+
+      # ============================================================
+      # 9. START CLIPS STUDIO STACK
       # ============================================================
       - name: Start Clips Studio (Docker Compose)
         run: |
           echo "=========================================="
           echo "Starting Clips Studio Stack"
           echo "=========================================="
-          
-          # Get Docker gateway IP for Ollama communication
-          DOCKER_GATEWAY=$(ip route show dev docker0 | awk '{print $7}')
+
+          DOCKER_GATEWAY=$(ip route show dev docker0 | awk '/default/ {print $3}')
+
           if [ -z "$DOCKER_GATEWAY" ]; then
             DOCKER_GATEWAY="172.17.0.1"
           fi
-          
+
           echo "Docker Gateway: $DOCKER_GATEWAY"
+
           export OLLAMA_HOST="http://$DOCKER_GATEWAY:11434"
-          
+
+          echo "Ollama for Docker: $OLLAMA_HOST"
+
           echo ""
           echo "Pulling latest images..."
-          docker compose pull 2>&1 | tail -5
-          
+          docker compose pull
+
           echo ""
           echo "Starting services (excluding built-in Ollama)..."
-          docker compose up -d --scale ollama=0
-          
+
+          OLLAMA_HOST="$OLLAMA_HOST" \
+            docker compose up -d --scale ollama=0
+
           echo ""
           echo "Waiting for services to stabilize..."
           sleep 10
-          
+
           echo ""
           echo "Docker containers status:"
           docker compose ps
 
       # ============================================================
-      # 9. WAIT FOR UI TO BE READY
+      # 10. WAIT FOR UI
       # ============================================================
       - name: Wait for Clips Studio UI
         run: |
           echo "=========================================="
           echo "Waiting for UI Service"
           echo "=========================================="
-          
+
           for i in {1..60}; do
             if curl -sf http://127.0.0.1:5173 > /dev/null 2>&1; then
               echo "✅ UI is ready on port 5173"
               exit 0
             fi
-            echo "   Attempt $i/60 - waiting..."
+
+            echo "Attempt $i/60 - waiting..."
             sleep 2
           done
-          
+
           echo "❌ UI did not respond within 120 seconds"
+
+          echo ""
+          echo "Docker status:"
+          docker compose ps
+
           echo ""
           echo "Docker logs:"
-          docker compose logs ui | tail -30
+          docker compose logs --tail=50 ui
+
           exit 1
 
       # ============================================================
-      # 10. VERIFY PORT BINDINGS
+      # 11. VERIFY PORT BINDINGS
       # ============================================================
       - name: Verify Port Bindings
         run: |
           echo "=========================================="
           echo "Verifying Port Bindings"
           echo "=========================================="
-          
+
           echo ""
           echo "Checking listening ports..."
-          sudo ss -lntp | grep -E ':(5173|8765|11434)' || echo "⚠️ Some ports not found in ss output"
-          
+
+          sudo ss -lntp | grep -E ':(5173|8765|11434)' \
+            || echo "⚠️ Some ports not found in ss output"
+
           echo ""
           echo "Docker port mappings:"
-          docker compose ps --format "table {{.Names}}\t{{.Ports}}"
+          docker compose ps
 
       # ============================================================
-      # 11. TEST LOCAL CONNECTIVITY
+      # 12. TEST LOCAL CONNECTIVITY
       # ============================================================
       - name: Test Local Connectivity
         run: |
           echo "=========================================="
           echo "Testing Local Connectivity"
           echo "=========================================="
-          
+
           echo ""
-          echo "Testing UI (localhost:5173)..."
-          curl -I http://127.0.0.1:5173 2>&1 | head -5 || echo "⚠️ localhost:5173 not responding"
-          
+          echo "Testing UI..."
+          curl -I http://127.0.0.1:5173 || true
+
           echo ""
-          echo "Testing Backend (localhost:8765)..."
-          curl -I http://127.0.0.1:8765 2>&1 | head -5 || echo "⚠️ localhost:8765 not responding"
-          
+          echo "Testing Backend..."
+          curl -I http://127.0.0.1:8765 || true
+
           echo ""
-          echo "Testing Ollama (localhost:11434)..."
-          curl -s http://127.0.0.1:11434/api/tags 2>&1 | head -2 || echo "⚠️ localhost:11434 not responding"
+          echo "Testing Ollama..."
+          curl -s http://127.0.0.1:11434/api/tags | head -c 500 || true
 
       # ============================================================
-      # 12. TEST TAILSCALE CONNECTIVITY
+      # 13. TEST TAILSCALE CONNECTIVITY
       # ============================================================
       - name: Test Tailscale Connectivity
         run: |
           echo "=========================================="
           echo "Testing Tailscale Connectivity"
           echo "=========================================="
-          
+
           TS_IP=$(tailscale ip -4)
-          
+
           echo "Tailscale IP: $TS_IP"
           echo ""
-          
-          echo "Testing UI via Tailscale ($TS_IP:5173)..."
+
+          echo "Testing UI via Tailscale..."
+
           HTTP_CODE=$(curl \
             --connect-timeout 10 \
             --max-time 20 \
             -s \
             -o /dev/null \
             -w "%{http_code}" \
-            "http://$TS_IP:5173" 2>&1 || echo "000")
-          
+            "http://$TS_IP:5173" || true)
+
           echo "HTTP Response Code: $HTTP_CODE"
-          
+
           if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
             echo "✅ UI is reachable via Tailscale!"
           else
-            echo "❌ UI is NOT reachable via Tailscale"
-            echo ""
-            echo "Troubleshooting info:"
-            echo "- Ensure your laptop/phone is connected to Tailscale"
-            echo "- Check that clips-studio-runner-* appears in your Tailscale devices"
-            echo "- Try pinging the Tailscale IP from your device first"
+            echo "⚠️ UI did not return 200/304 via Tailscale"
           fi
 
       # ============================================================
-      # 13. DISPLAY FINAL STATUS & ACCESS INFORMATION
+      # 14. DISPLAY ACCESS INFORMATION
       # ============================================================
       - name: Display Access Information
         run: |
           TS_IP=$(tailscale ip -4)
-          
+
           echo ""
           echo "======================================================"
           echo "           ✅ CLIPS STUDIO IS READY"
@@ -295,53 +328,45 @@ EOF
           echo "INSTRUCTIONS:"
           echo "======================================================"
           echo ""
-          echo "1. On your laptop/phone, open Tailscale app"
-          echo "2. Ensure it shows status: CONNECTED"
-          echo "3. In your browser, navigate to:"
-          echo "   👉 http://$TS_IP:5173"
+          echo "1. Connect your laptop/phone to Tailscale."
+          echo "2. Open:"
+          echo "   http://$TS_IP:5173"
           echo ""
-          echo "4. Do NOT stop this workflow while using Clips Studio"
-          echo "5. When finished, click 'Cancel workflow' on GitHub"
+          echo "3. Keep this workflow running while using Clips Studio."
+          echo "4. Cancel the workflow when finished."
           echo ""
           echo "======================================================"
-          echo ""
-          
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
 
       # ============================================================
-      # 14. KEEP WORKFLOW RUNNING
+      # 15. KEEP WORKFLOW RUNNING
       # ============================================================
       - name: Keep Clips Studio Running
         run: |
           TS_IP=$(tailscale ip -4)
-          
+
           echo "=========================================="
           echo "🎬 CLIPS STUDIO IS ACTIVE"
           echo "=========================================="
           echo ""
           echo "Access at: http://$TS_IP:5173"
           echo ""
-          echo "This workflow will stay active until you:"
-          echo "1. Stop this job manually, or"
-          echo "2. Reach the 6-hour timeout limit, or"
-          echo "3. Manually cancel the workflow"
-          echo ""
-          echo "=========================================="
-          echo ""
-          
+
           while true; do
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Clips Studio active | Tailscale: $TS_IP | Access: http://$TS_IP:5173"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Clips Studio active | Tailscale: $TS_IP"
             sleep 300
           done
 
       # ============================================================
-      # 15. CLEANUP ON FAILURE (if job is cancelled)
+      # 16. CLEANUP
       # ============================================================
       - name: Cleanup
         if: always()
         run: |
           echo "Stopping Clips Studio services..."
-          docker compose down || true
-          
+          docker compose down --remove-orphans || true
+
           echo "Disconnecting Tailscale..."
           sudo tailscale logout || true
+```
