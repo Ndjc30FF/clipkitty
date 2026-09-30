@@ -1,4 +1,4 @@
-name: Clips Studio (Gemma 7B Headless Web)
+name: Clips Studio
 
 on:
   workflow_dispatch:
@@ -8,91 +8,102 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  run-gemma-studio:
+  clips-studio:
     runs-on: ubuntu-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Clips Studio
         uses: actions/checkout@v4
         with:
           repository: ColinGPT9/clips-studio
 
-      - name: Cache Ollama Models (Gemma 7B)
-        id: cache-ollama
-        uses: actions/cache@v4
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
         with:
-          path: ~/.ollama
-          key: ollama-gemma-7b-v1
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
-      - name: Install & Configure Host Ollama
+      - name: Show Tailscale information
+        run: |
+          echo "Tailscale IP:"
+          tailscale ip -4
+
+          echo "Tailscale status:"
+          tailscale status
+
+      - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          
-          export OLLAMA_HOST="0.0.0.0:11434"
-          export OLLAMA_MAX_LOADED_MODELS=2
-          export OLLAMA_NUM_PARALLEL=2
-          
-          ollama serve &
-          
-          echo "Waiting for Ollama service to start..."
-          until curl -s http://localhost:11434/api/tags > /dev/null; do
-            sleep 1
+
+          sudo systemctl stop ollama || true
+
+          OLLAMA_HOST=0.0.0.0:11434 ollama serve > /tmp/ollama.log 2>&1 &
+
+          echo "Waiting for Ollama..."
+
+          until curl -sf http://127.0.0.1:11434/api/tags >/dev/null; do
+            sleep 2
           done
-          echo "Ollama service is live."
-          
-          echo "Verifying / Loading Gemma 7B model..."
+
+          echo "Ollama is ready."
+
           ollama pull gemma:7b
 
-      - name: Establish Tailscale Mesh Tunnel
+      - name: Start Clips Studio
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscaled --state=mem: &
-          sleep 3
-          
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="clips-gemma-$GITHUB_RUN_ID"
-          
+          docker compose pull
+
+          docker compose up -d --scale ollama=0
+
+          echo "Waiting for Clips Studio..."
+
+          for i in {1..60}; do
+            if curl -sf http://127.0.0.1:5173 >/dev/null; then
+              echo "UI is ready."
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Verify network access
+        run: |
           TS_IP=$(tailscale ip -4)
-          if [ -z "$TS_IP" ]; then
-            echo "Error: Tailscale IP acquisition failed."
-            exit 1
-          fi
-          
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          echo "Tailscale connected at IP: $TS_IP"
 
-      - name: Launch Clips Studio Web Stack & Expose Ports
-        run: |
-          DOCKER_GATEWAY=$(ip route show dev docker0 | awk '{print $7}')
-          if [ -z "$DOCKER_GATEWAY" ]; then
-            DOCKER_GATEWAY="172.17.0.1"
-          fi
-          
-          export OLLAMA_HOST="http://$DOCKER_GATEWAY:11434"
-          
-          # Spin up containers ignoring internal ollama
-          docker compose up -d --scale ollama=0 || docker compose up -d ui backend
-          
-          # Wait 10 seconds for Vite/React server to bind
-          sleep 10
-          
-          # Verify local connectivity on the runner
-          echo "Testing local HTTP response..."
-          curl -I http://localhost:5173 || echo "WARNING: Port 5173 not responding on localhost!"
+          echo "======================================"
+          echo "Tailscale IP: $TS_IP"
+          echo "======================================"
 
-      - name: Display Web URL & Session Loop
+          echo ""
+          echo "Local UI:"
+          curl -I http://127.0.0.1:5173 || true
+
+          echo ""
+          echo "Tailscale UI:"
+          curl -I http://$TS_IP:5173 || true
+
+          echo ""
+          echo "Engine:"
+          curl -I http://127.0.0.1:8765 || true
+
+          echo ""
+          echo "Ollama:"
+          curl -s http://127.0.0.1:11434/api/tags || true
+
+          echo ""
+          echo "======================================"
+          echo "OPEN THIS:"
+          echo "http://$TS_IP:5173"
+          echo "======================================"
+
+      - name: Keep Clips Studio running
         run: |
-          echo ""
-          echo "=================================================="
-          echo "        CLIPS STUDIO IS LIVE & READY              "
-          echo "=================================================="
-          echo " Web Interface:  http://$TAILSCALE_IP:5173        "
-          echo " Tailscale IP:   $TAILSCALE_IP                    "
-          echo " Active Model:   gemma:7b (Hosted on Runner)      "
-          echo "=================================================="
-          echo ""
-          
+          TS_IP=$(tailscale ip -4)
+
+          echo "Clips Studio is running."
+          echo "Web UI: http://$TS_IP:5173"
+          echo "Engine: http://$TS_IP:8765"
+
           while true; do
-            echo "[$(date)] Web App Active. Access at http://$TAILSCALE_IP:5173"
+            echo "[$(date)] Clips Studio active"
             sleep 300
           done
