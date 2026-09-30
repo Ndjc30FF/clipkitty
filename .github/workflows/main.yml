@@ -29,39 +29,29 @@ jobs:
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           
-          # Force Ollama to accept connections from Docker containers
           export OLLAMA_HOST="0.0.0.0:11434"
           export OLLAMA_MAX_LOADED_MODELS=2
           export OLLAMA_NUM_PARALLEL=2
           
-          # Start Ollama daemon in background
           ollama serve &
           
-          # Wait for Ollama service port to open
           echo "Waiting for Ollama service to start..."
           until curl -s http://localhost:11434/api/tags > /dev/null; do
             sleep 1
           done
           echo "Ollama service is live."
           
-          # Pull Gemma 7B (Skips download if cache hit)
           echo "Verifying / Loading Gemma 7B model..."
           ollama pull gemma:7b
 
       - name: Establish Tailscale Mesh Tunnel
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          
-          # Start Tailscale daemon in memory mode
           sudo tailscaled --state=mem: &
-          
-          # Wait for daemon socket initialization
           sleep 3
           
-          # Connect to private network using GitHub Secret
           sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="clips-gemma-$GITHUB_RUN_ID"
           
-          # Extract assigned private IP
           TS_IP=$(tailscale ip -4)
           if [ -z "$TS_IP" ]; then
             echo "Error: Tailscale IP acquisition failed."
@@ -71,19 +61,24 @@ jobs:
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
           echo "Tailscale connected at IP: $TS_IP"
 
-      - name: Launch Clips Studio Web Stack (Bypassing Internal Ollama)
+      - name: Launch Clips Studio Web Stack & Expose Ports
         run: |
-          # Retrieve default Docker gateway IP (usually 172.17.0.1)
           DOCKER_GATEWAY=$(ip route show dev docker0 | awk '{print $7}')
           if [ -z "$DOCKER_GATEWAY" ]; then
             DOCKER_GATEWAY="172.17.0.1"
           fi
           
-          echo "Mapping OLLAMA_HOST to Docker Gateway: http://$DOCKER_GATEWAY:11434"
           export OLLAMA_HOST="http://$DOCKER_GATEWAY:11434"
           
-          # Launch only UI and Backend, scaling repo's internal ollama container to 0 to avoid port conflict
+          # Spin up containers ignoring internal ollama
           docker compose up -d --scale ollama=0 || docker compose up -d ui backend
+          
+          # Wait 10 seconds for Vite/React server to bind
+          sleep 10
+          
+          # Verify local connectivity on the runner
+          echo "Testing local HTTP response..."
+          curl -I http://localhost:5173 || echo "WARNING: Port 5173 not responding on localhost!"
 
       - name: Display Web URL & Session Loop
         run: |
@@ -97,8 +92,7 @@ jobs:
           echo "=================================================="
           echo ""
           
-          # Health check & session keep-alive loop
           while true; do
-            echo "[$(date)] Web App & Gemma 7B Active. Access at http://$TAILSCALE_IP:5173"
+            echo "[$(date)] Web App Active. Access at http://$TAILSCALE_IP:5173"
             sleep 300
           done
