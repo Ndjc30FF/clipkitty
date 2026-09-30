@@ -22,7 +22,7 @@ jobs:
           repository: ColinGPT9/clips-studio
 
       # ============================================================
-      # 2. VERIFY REPOSITORY CONTENTS & TAILSCALE SECRET
+      # 2. VERIFY REPOSITORY & SECRETS
       # ============================================================
       - name: Verify Environment & Secrets
         run: |
@@ -32,8 +32,7 @@ jobs:
           ls -la
           
           if [ ! -f "docker-compose.yml" ]; then
-            echo "❌ ERROR: docker-compose.yml not found in working directory!"
-            echo "Ensure docker-compose.yml exists in the root of ColinGPT9/clips-studio"
+            echo "❌ ERROR: docker-compose.yml not found in repository root!"
             exit 1
           fi
           
@@ -42,7 +41,7 @@ jobs:
             echo "Add it in: Settings → Secrets and variables → Actions"
             exit 1
           else
-            echo "✅ Repository files verified & Tailscale auth key configured"
+            echo "✅ Repository files verified & Tailscale key configured"
           fi
 
       # ============================================================
@@ -76,7 +75,7 @@ jobs:
           ollama serve > /tmp/ollama.log 2>&1 &
           sleep 3
           
-          echo "Waiting for Ollama API to be ready..."
+          echo "Waiting for Ollama API..."
           for i in {1..30}; do
             if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
               echo "✅ Ollama is ready"
@@ -92,10 +91,10 @@ jobs:
           
           echo ""
           echo "Verifying model..."
-          curl -s http://localhost:11434/api/tags | grep -q "gemma" && echo "✅ Gemma 7B loaded" || echo "⚠️ Gemma 7B may not be loaded"
+          curl -s http://localhost:11434/api/tags | grep -q "gemma" && echo "✅ Gemma 7B loaded" || echo "⚠️ Gemma 7B load warning"
 
       # ============================================================
-      # 5. INSTALL TAILSCALE (Official Action)
+      # 5. CONNECT TO TAILSCALE
       # ============================================================
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
@@ -122,8 +121,6 @@ jobs:
           echo "✅ Tailscale IP: $TS_IP"
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
           
-          echo ""
-          echo "Tailscale Status:"
           tailscale status
 
       # ============================================================
@@ -169,7 +166,7 @@ EOF
           echo "Ollama for Docker: $OLLAMA_HOST"
           
           echo ""
-          echo "Pulling latest images using base + override compose files..."
+          echo "Pulling latest images..."
           docker compose -f docker-compose.yml -f docker-compose.override.yml pull
           
           echo ""
@@ -215,8 +212,6 @@ EOF
           echo "Verifying Port Bindings"
           echo "=========================================="
           
-          echo ""
-          echo "Checking listening ports..."
           sudo ss -lntp | grep -E ':(5173|8765|11434)' || echo "⚠️ Some ports not found in ss output"
           
           echo ""
@@ -224,59 +219,28 @@ EOF
           docker compose -f docker-compose.yml -f docker-compose.override.yml ps --format "table {{.Names}}\t{{.Ports}}"
 
       # ============================================================
-      # 11. TEST LOCAL CONNECTIVITY
+      # 11. TEST CONNECTIVITY
       # ============================================================
-      - name: Test Local Connectivity
+      - name: Test Local & Tailscale Connectivity
         run: |
           echo "=========================================="
-          echo "Testing Local Connectivity"
-          echo "=========================================="
-          
-          echo ""
-          echo "Testing UI (localhost:5173)..."
-          curl -I http://127.0.0.1:5173 2>&1 | head -5 || echo "⚠️ localhost:5173 not responding"
-          
-          echo ""
-          echo "Testing Backend (localhost:8765)..."
-          curl -I http://127.0.0.1:8765 2>&1 | head -5 || echo "⚠️ localhost:8765 not responding"
-          
-          echo ""
-          echo "Testing Ollama (localhost:11434)..."
-          curl -s http://127.0.0.1:11434/api/tags 2>&1 | head -2 || echo "⚠️ localhost:11434 not responding"
-
-      # ============================================================
-      # 12. TEST TAILSCALE CONNECTIVITY
-      # ============================================================
-      - name: Test Tailscale Connectivity
-        run: |
-          echo "=========================================="
-          echo "Testing Tailscale Connectivity"
+          echo "Testing Connectivity"
           echo "=========================================="
           
           TS_IP=$(tailscale ip -4)
           
-          echo "Tailscale IP: $TS_IP"
-          echo ""
+          echo "Testing UI (localhost:5173)..."
+          curl -I http://127.0.0.1:5173 2>&1 | head -5 || echo "⚠️ localhost UI non-responsive"
+          
+          echo "Testing Backend (localhost:8765)..."
+          curl -I http://127.0.0.1:8765 2>&1 | head -5 || echo "⚠️ localhost Backend non-responsive"
           
           echo "Testing UI via Tailscale ($TS_IP:5173)..."
-          HTTP_CODE=$(curl \
-            --connect-timeout 10 \
-            --max-time 20 \
-            -s \
-            -o /dev/null \
-            -w "%{http_code}" \
-            "http://$TS_IP:5173" 2>&1 || echo "000")
-          
-          echo "HTTP Response Code: $HTTP_CODE"
-          
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
-            echo "✅ UI is reachable via Tailscale!"
-          else
-            echo "❌ UI is NOT reachable via Tailscale"
-          fi
+          HTTP_CODE=$(curl --connect-timeout 10 --max-time 20 -s -o /dev/null -w "%{http_code}" "http://$TS_IP:5173" 2>&1 || echo "000")
+          echo "HTTP Code: $HTTP_CODE"
 
       # ============================================================
-      # 13. DISPLAY ACCESS INFORMATION
+      # 12. DISPLAY ACCESS INFORMATION
       # ============================================================
       - name: Display Access Information
         run: |
@@ -292,7 +256,7 @@ EOF
           echo "======================================================"
 
       # ============================================================
-      # 14. KEEP WORKFLOW RUNNING
+      # 13. KEEP WORKFLOW RUNNING
       # ============================================================
       - name: Keep Clips Studio Running
         run: |
@@ -304,33 +268,29 @@ EOF
           done
 
       # ============================================================
-      # 15. DETAILED ERROR DIAGNOSTIC (Runs on Failure)
+      # 14. DIAGNOSTIC REPORT ON FAILURE
       # ============================================================
       - name: Detailed Diagnostic Report
         if: failure()
         run: |
           echo "======================================================"
-          echo "❌ WORKFLOW FAILURE DETECTED"
+          echo "❌ WORKFLOW FAILURE DIAGNOSTICS"
           echo "======================================================"
           
-          echo ""
-          echo "--- 1. Directory Structure ---"
+          echo "--- Directory Contents ---"
           ls -la
           
-          echo ""
-          echo "--- 2. Docker Containers Status ---"
-          docker compose ps -a || docker ps -a
+          echo "--- Docker Containers ---"
+          docker compose -f docker-compose.yml -f docker-compose.override.yml ps -a || docker ps -a
           
-          echo ""
-          echo "--- 3. Last 50 lines of Docker Logs ---"
-          docker compose logs --tail=50 || true
+          echo "--- Recent Docker Logs ---"
+          docker compose -f docker-compose.yml -f docker-compose.override.yml logs --tail=50 || true
           
-          echo ""
-          echo "--- 4. Ollama Service Logs ---"
+          echo "--- Ollama Logs ---"
           cat /tmp/ollama.log | tail -30 || true
 
       # ============================================================
-      # 16. CLEANUP
+      # 15. CLEANUP
       # ============================================================
       - name: Cleanup
         if: always()
