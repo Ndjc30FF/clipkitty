@@ -552,33 +552,40 @@ jobs:
           echo "✅ Engine can reach Ollama."
 
       # ============================================================
-      # START CLOUDFLARE TUNNELS FOR ALL SERVICES
+      # START NGROK TUNNELS FOR ALL SERVICES
       # ============================================================
 
-      - name: Start Cloudflare Quick Tunnels
+      - name: Install and Start ngrok
         shell: bash
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
           set -Eeuo pipefail
 
-          # Install cloudflared
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
+          echo "======================================================"
+          echo "STARTING NGROK TUNNELS"
+          echo "======================================================"
 
-          # Start 3 background tunnels with Host Header rewriting
-          cloudflared tunnel --url http://127.0.0.1:5173 --http-host-header 127.0.0.1:5173 > /tmp/cloudflared-ui.log 2>&1 &
-          cloudflared tunnel --url http://127.0.0.1:8765 --http-host-header 127.0.0.1:8765 > /tmp/cloudflared-engine.log 2>&1 &
-          cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header 127.0.0.1:11434 > /tmp/cloudflared-ollama.log 2>&1 &
+          # Install ngrok
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update && sudo apt install ngrok -y
 
-          echo "Waiting for Cloudflare Tunnel URLs..."
-          for i in {1..20}; do
-            if grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared-ui.log > /tmp/ui_url.txt && \
-               grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared-engine.log > /tmp/engine_url.txt && \
-               grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared-ollama.log > /tmp/ollama_url.txt; then
-              echo "✅ All 3 Tunnels established!"
-              break
-            fi
-            sleep 2
-          done
+          # Add authtoken
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+
+          # Start UI Tunnel
+          ngrok http 5173 --host-header=rewrite > /tmp/ngrok-ui.log 2>&1 &
+          
+          # Start Engine Tunnel
+          ngrok http 8765 --host-header=rewrite > /tmp/ngrok-engine.log 2>&1 &
+
+          # Start Ollama Tunnel
+          ngrok http 11434 --host-header=rewrite > /tmp/ngrok-ollama.log 2>&1 &
+
+          echo "Waiting for ngrok URLs..."
+          sleep 5
+
       # ============================================================
       # DISPLAY PUBLIC ACCESS LINKS
       # ============================================================
@@ -588,19 +595,29 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          UI_URL=$(cat /tmp/ui_url.txt 2>/dev/null || echo "Failed")
-          ENGINE_URL=$(cat /tmp/engine_url.txt 2>/dev/null || echo "Failed")
-          OLLAMA_URL=$(cat /tmp/ollama_url.txt 2>/dev/null || echo "Failed")
+          # Extract public URLs from ngrok local API
+          python3 - <<'PY'
+          import json, urllib.request, time
 
-          echo ""
-          echo "======================================================"
-          echo "          CLIPS STUDIO PUBLIC TUNNEL LINKS"
-          echo "======================================================"
-          echo "Web UI URL:     ${UI_URL}"
-          echo "Engine API URL: ${ENGINE_URL}"
-          echo "Ollama API URL: ${OLLAMA_URL}"
-          echo "======================================================"
-          echo ""
+          for _ in range(15):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels") as response:
+                      data = json.loads(response.read().decode())
+                      tunnels = data.get("tunnels", [])
+                      if len(tunnels) >= 3:
+                          print("")
+                          print("======================================================")
+                          print("          CLIPS STUDIO PUBLIC TUNNEL LINKS")
+                          print("======================================================")
+                          for t in tunnels:
+                              print(f"{t['name']}: {t['public_url']}")
+                          print("======================================================")
+                          print("")
+                          break
+              except Exception:
+                  pass
+              time.sleep(2)
+          PY
 
       # ============================================================
       # 17. KEEP RUNNING
