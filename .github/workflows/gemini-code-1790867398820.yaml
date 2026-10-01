@@ -2,11 +2,6 @@ name: AutoClip - AI Video Processing Runner
 
 on:
   workflow_dispatch:
-    inputs:
-      duration_hours:
-        description: 'Hours to keep application alive (1-6)'
-        required: false
-        default: '5'
 
 concurrency:
   group: autoclip-${{ github.workflow }}-${{ github.ref }}
@@ -17,7 +12,7 @@ permissions:
 
 jobs:
   autoclip:
-    name: Run AutoClip & Cloudflare Tunnel
+    name: Run AutoClip & Tmate Port Forwarding
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -89,16 +84,13 @@ jobs:
           docker compose pull --ignore-pull-failures || true
           docker compose up -d --build
 
-      - name: Automated Diagnostics & Health Verification
+      - name: Verify Service Health
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "================ DOCKER CONTAINER LIST ================"
-          docker compose ps
-
           echo "================ TESTING LOCAL PORT RESPONSES ================"
-          TIMEOUT=60
+          TIMEOUT=90
           ELAPSED=0
           SUCCESS=false
 
@@ -113,95 +105,32 @@ jobs:
           done
 
           if [[ "$SUCCESS" == "false" ]]; then
-            echo "❌ Health check failed. Printing recent container logs:"
+            echo "❌ Health check failed. Printing container logs:"
             docker compose logs --tail=100
             exit 1
           fi
 
-          echo "================ PORT 8000 HTTP RESPONSE HEADER ================"
-          curl -i -s http://127.0.0.1:8000/ | head -n 25 || true
-
           echo "✅ AutoClip backend verified healthy on port 8000!"
 
-      - name: Install Cloudflare CLI
+      - name: Display Port Forwarding Instructions
         shell: bash
         run: |
-          set -Eeuo pipefail
-          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          rm -f cloudflared.deb
+          echo "========================================================================"
+          echo "🌐 AUTOCLIP LOCAL PORT FORWARDING INSTRUCTIONS"
+          echo "========================================================================"
+          echo "To access the Web UI on your laptop:"
+          echo "1. Look at the next step (Setup Tmate SSH Session) for the SSH command."
+          echo "2. Add '-L 8000:localhost:8000' right after 'ssh':"
+          echo ""
+          echo "   ssh -L 8000:localhost:8000 -p <PORT> <USER>@<HOST>"
+          echo ""
+          echo "3. Open your browser on your laptop at: http://localhost:8000"
+          echo "========================================================================"
 
-      - name: Launch Cloudflare Tunnel
-        shell: bash
-        env:
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-        run: |
-          set -Eeuo pipefail
-
-          if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
-            echo "Launching Cloudflare Managed Tunnel via Token..."
-            cloudflared tunnel --no-autoupdate run --token "${CLOUDFLARE_TUNNEL_TOKEN}" > cloudflared.log 2>&1 &
-            echo "✅ Named tunnel initiated in background."
-          else
-            echo "No CLOUDFLARE_TUNNEL_TOKEN set. Launching ephemeral trycloudflare tunnel..."
-            cloudflared tunnel --url http://127.0.0.1:8000 --http-host-header="localhost" --protocol http2 --logfile cloudflared.log &
-
-            echo "Awaiting Cloudflare URL assignment..."
-            TUNNEL_URL=""
-            for i in {1..30}; do
-              if [[ -f cloudflared.log ]]; then
-                TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflared.log | head -n 1 || true)
-                if [[ -n "$TUNNEL_URL" ]]; then
-                  echo "======================================================"
-                  echo "🚀 AUTOCLIP PUBLIC WEB INTERFACE AVAILABLE AT:"
-                  echo "👉 $TUNNEL_URL"
-                  echo "======================================================"
-                  break
-                fi
-              fi
-              sleep 2
-            done
-
-            if [[ -z "$TUNNEL_URL" ]]; then
-              echo "❌ Cloudflare tunnel failed to assign a public URL. Printing cloudflared.log:"
-              cat cloudflared.log
-              exit 1
-            fi
-          fi
-
-      - name: Monitor Application Lifecycle
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          HOURS="${{ github.event.inputs.duration_hours }}"
-          HOURS=${HOURS:-5}
-          MAX_SECONDS=$((HOURS * 3600))
-          INTERVAL=30
-          ELAPSED=0
-
-          echo "Starting continuous health monitoring for ${HOURS} hour(s) (${MAX_SECONDS} seconds)..."
-
-          while [[ $ELAPSED -lt $MAX_SECONDS ]]; do
-            if ! docker compose ps | grep -q "Up"; then
-              echo "❌ ERROR: One or more Docker services stopped unexpectedly!"
-              exit 1
-            fi
-
-            if ! pgrep -x "cloudflared" > /dev/null; then
-              echo "❌ ERROR: Cloudflare tunnel process exited!"
-              exit 1
-            fi
-
-            sleep $INTERVAL
-            ELAPSED=$((ELAPSED + INTERVAL))
-
-            if [[ $((ELAPSED % 300)) -eq 0 ]]; then
-              echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Application status verified normal ($ELAPSED / $MAX_SECONDS seconds elapsed)."
-            fi
-          done
-
-          echo "✅ Operational window completed successfully."
+      - name: Setup Tmate SSH Session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: false
 
       - name: Failure Diagnostics
         if: failure()
@@ -212,13 +141,11 @@ jobs:
           docker compose ps
           echo "================ DOCKER CONTAINER LOGS ================"
           docker compose logs --tail=200
-          echo "================ CLOUDFLARE TUNNEL LOGS ================"
-          cat cloudflared.log 2>&1 || true
 
       - name: Clean Up Infrastructure
         if: always()
         shell: bash
         run: |
           set +e
-          pkill -f cloudflared || true
+          echo "Shutting down Docker containers..."
           docker compose down --volumes --remove-orphans || true
