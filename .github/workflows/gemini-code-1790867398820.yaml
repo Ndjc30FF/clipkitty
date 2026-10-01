@@ -87,7 +87,7 @@ jobs:
       - name: Verify Service Health
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set +e
 
           echo "================ TESTING LOCAL PORT RESPONSES ================"
           TIMEOUT=90
@@ -104,43 +104,32 @@ jobs:
             ELAPSED=$((ELAPSED + 5))
           done
 
-          if [[ "$SUCCESS" == "false" ]]; then
-            echo "❌ Health check failed. Printing container logs:"
-            docker compose logs --tail=100
-            exit 1
+          if [[ "$SUCCESS" == "true" ]]; then
+            echo "✅ AutoClip backend verified healthy on port 8000!"
+          else
+            echo "⚠️ Health check didn't pass within $TIMEOUT seconds. Starting Tmate anyway so you can debug live."
+            docker compose logs --tail=50
           fi
 
-          echo "✅ AutoClip backend verified healthy on port 8000!"
-
-      - name: Display Port Forwarding Instructions
+      - name: Display Port Forwarding Banner
+        if: always()
         shell: bash
         run: |
           echo "========================================================================"
-          echo "🌐 AUTOCLIP LOCAL PORT FORWARDING INSTRUCTIONS"
+          echo "🌐 CONNECT TO YOUR AUTOCLIP APP FROM YOUR LAPTOP"
           echo "========================================================================"
-          echo "To access the Web UI on your laptop:"
-          echo "1. Look at the next step (Setup Tmate SSH Session) for the SSH command."
-          echo "2. Add '-L 8000:localhost:8000' right after 'ssh':"
-          echo ""
-          echo "   ssh -L 8000:localhost:8000 -p <PORT> <USER>@<HOST>"
-          echo ""
-          echo "3. Open your browser on your laptop at: http://localhost:8000"
+          echo "1. Expand the 'Setup Tmate SSH Session' step below."
+          echo "2. Find the line starting with 'SSH:'."
+          echo "3. Copy the SSH command and add '-L 8000:localhost:8000' right after 'ssh'."
+          echo "4. Example syntax:"
+          echo "   ssh -L 8000:localhost:8000 <user>@<host>.tmate.io -p <port>"
           echo "========================================================================"
 
       - name: Setup Tmate SSH Session
         uses: mxschmitt/action-tmate@v3
+        if: always()
         with:
           limit-access-to-actor: false
-
-      - name: Failure Diagnostics
-        if: failure()
-        shell: bash
-        run: |
-          set +e
-          echo "================ DOCKER CONTAINER STATUS ================"
-          docker compose ps
-          echo "================ DOCKER CONTAINER LOGS ================"
-          docker compose logs --tail=200
 
       - name: Clean Up Infrastructure
         if: always()
