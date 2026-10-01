@@ -552,7 +552,7 @@ jobs:
           echo "✅ Engine can reach Ollama."
 
       # ============================================================
-      # START CLOUDFLARE TUNNELS FOR ALL 3 SERVICES
+      # START CLOUDFLARE TUNNELS FOR ALL SERVICES
       # ============================================================
 
       - name: Start Cloudflare Quick Tunnels
@@ -560,15 +560,11 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "STARTING CLOUDFLARE TUNNELS"
-          echo "======================================================"
-
-          # Install cloudflared binary
+          # Install cloudflared
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-          # Start background tunnels with Host header rewrites
+          # Start 3 background tunnels with Host Header rewriting
           cloudflared tunnel --url http://127.0.0.1:5173 --http-host-header 127.0.0.1:5173 > /tmp/cloudflared-ui.log 2>&1 &
           cloudflared tunnel --url http://127.0.0.1:8765 --http-host-header 127.0.0.1:8765 > /tmp/cloudflared-engine.log 2>&1 &
           cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header 127.0.0.1:11434 > /tmp/cloudflared-ollama.log 2>&1 &
@@ -583,7 +579,6 @@ jobs:
             fi
             sleep 2
           done
-
       # ============================================================
       # DISPLAY PUBLIC ACCESS LINKS
       # ============================================================
