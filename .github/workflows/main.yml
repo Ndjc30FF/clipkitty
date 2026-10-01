@@ -552,15 +552,33 @@ jobs:
           echo "✅ Engine can reach Ollama."
 
       # ============================================================
-      # CONNECT TO TAILSCALE
+      # CONNECT TO CLOUDFLARE QUICK TUNNEL
       # ============================================================
 
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      - name: Start Cloudflare Quick Tunnel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "STARTING CLOUDFLARE TUNNEL"
+          echo "======================================================"
+
+          # Install cloudflared binary
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+          # Start tunnel in background pointing to UI port 5173
+          cloudflared tunnel --url http://127.0.0.1:5173 > /tmp/cloudflared.log 2>&1 &
+
+          echo "Waiting for Cloudflare Tunnel URL..."
+          for i in {1..15}; do
+            if grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared.log > /tmp/tunnel_url.txt; then
+              echo "✅ Tunnel established!"
+              break
+            fi
+            sleep 2
+          done
 
       # ============================================================
       # 17. DISPLAY FINAL STATUS
@@ -571,7 +589,7 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          TS_IP=$(tailscale ip -4 || echo "Unknown")
+          PUBLIC_URL=$(cat /tmp/tunnel_url.txt 2>/dev/null || echo "Failed to get URL")
 
           echo ""
           echo "======================================================"
@@ -579,23 +597,16 @@ jobs:
           echo "======================================================"
 
           echo ""
-          echo "Runner hostname:"
-          hostname
-
-          echo ""
           echo "Docker services:"
           docker compose ps
 
           echo ""
           echo "======================================================"
-          echo "          TAILSCALE BROWSER ACCESS LINKS"
+          echo "          CLOUDFLARE BROWSER ACCESS LINK"
           echo "======================================================"
-          echo "UI (Browser Link): http://${TS_IP}:5173"
-          echo "Engine API:        http://${TS_IP}:8765"
-          echo "Ollama API:        http://${TS_IP}:11434"
+          echo "Access Web UI at: ${PUBLIC_URL}"
           echo "======================================================"
           echo ""
-
       # ============================================================
       # 18. KEEP RUNNING
       # ============================================================
