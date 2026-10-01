@@ -227,15 +227,7 @@ jobs:
           echo "======================================================"
 
           docker compose pull
-      - name: Install Missing Engine Dependency
-        shell: bash
-        run: |
-          set -Eeuo pipefail
 
-          echo "Installing defusedxml..."
-
-          docker compose run --rm --no-deps \
-            engine pip install --no-cache-dir defusedxml 
 
       # ============================================================
       # 7. START THE ORIGINAL STACK
@@ -251,16 +243,6 @@ jobs:
           echo "======================================================"
 
           docker compose up -d
-          
-          echo ""
-          echo "Installing missing Python dependency: defusedxml"
-
-          docker compose exec -T engine \
-            pip install --no-cache-dir defusedxml
-
-          echo ""
-          echo "Restarting engine after dependency installation..."
-          docker compose restart engine
           echo ""
           echo "Compose startup completed."
 
