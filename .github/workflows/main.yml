@@ -691,8 +691,4 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.override.yml down 2>&1 || true
           
           echo ""
-          echo "Disconnecting Tailscale..."
-          sudo tailscale logout 2>&1 || true
-          
-          echo ""
           echo "✅ Cleanup complete"
