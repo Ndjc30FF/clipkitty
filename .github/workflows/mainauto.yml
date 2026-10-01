@@ -114,30 +114,31 @@ jobs:
           echo "✅ Prepared local storage directories."
 
       # ============================================================
-      # 6. PULL & BUILD DOCKER IMAGES
+      # 6. PULL PUBLIC DOCKER IMAGES
       # ============================================================
 
-      - name: Pull Base Docker Images
+      - name: Pull External Base Images
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          # Pull public base images without failing on locally-built images
+          # Only pull external dependencies (Redis, etc.) and ignore local builds
           docker compose pull --ignore-pull-failures || true
 
-      - name: Build Local Docker Images
+      # ============================================================
+      # 7. BUILD LOCAL DOCKER IMAGES FROM SOURCE
+      # ============================================================
+
+      - name: Build Docker Images from Source
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "BUILDING LOCAL DOCKER IMAGES FROM SOURCE"
-          echo "======================================================"
-
-          docker compose build --no-cache
+          # Build autoclip:local image directly from root Dockerfile
+          docker compose build --no-cache autoclip
 
       # ============================================================
-      # 7. START AUTOCLIP SERVICES
+      # 8. START AUTOCLIP SERVICES
       # ============================================================
 
       - name: Start AutoClip Services
@@ -145,52 +146,42 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "STARTING AUTOCLIP SERVICES"
-          echo "======================================================"
-
           docker compose up -d
 
           echo "Waiting 20s for container initializations..."
           sleep 20
 
       # ============================================================
-      # 8. VERIFY SERVICES & UI HEALTH CHECK
+      # 9. VERIFY SERVICES & UI HEALTH CHECK (15 ATTEMPTS)
       # ============================================================
 
-      - name: Wait for Services and UI Ready
+      - name: Wait for Services and Web UI
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "WAITING FOR BACKEND API & WEB UI"
-          echo "======================================================"
-
-          echo "1. Checking Backend API (Port 8000)..."
-          for i in {1..40}; do
+          echo "Checking Backend API (Port 8000)..."
+          for i in {1..15}; do
             if curl -sf http://127.0.0.1:8000/api/v1/health/ > /dev/null 2>&1 || curl -sf http://127.0.0.1:8000/ > /dev/null 2>&1; then
               echo "✅ Backend API is live!"
               break
             fi
-            echo "⏳ Attempt $i/40 - Waiting for Backend API..."
+            echo "⏳ Attempt $i/15 - Waiting for Backend API..."
             sleep 3
           done
 
-          echo ""
-          echo "2. Checking Web UI (Port 3000)..."
-          # Extended attempt loop (up to 60 tries / 3 mins) with connect timeouts for slow frontend boots
-          for i in {1..60}; do
-            if curl -sL --connect-timeout 2 --max-time 5 http://127.0.0.1:3000 > /dev/null 2>&1; then
+          echo "Checking Web UI (Port 3000)..."
+          for i in {1..15}; do
+            if curl -sL --connect-timeout 2 http://127.0.0.1:3000 > /dev/null 2>&1; then
               echo "✅ Web UI is live!"
               break
             fi
-            echo "⏳ Attempt $i/60 - Waiting for Web UI startup..."
+            echo "⏳ Attempt $i/15 - Waiting for Web UI..."
             sleep 3
           done
 
       # ============================================================
-      # 9. INSTALL CLOUDFLARE TUNNEL (CLOUDFLARED)
+      # 10. INSTALL CLOUDFLARE TUNNEL
       # ============================================================
 
       - name: Install Cloudflare Tunnel
@@ -198,16 +189,11 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "INSTALLING CLOUDFLARE TUNNEL"
-          echo "======================================================"
-
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
-          cloudflared --version
 
       # ============================================================
-      # 10. START CLOUDFLARE TUNNELS & EXPOSE PUBLIC URLS
+      # 11. START CLOUDFLARE TUNNELS & EXPOSE PUBLIC URLS
       # ============================================================
 
       - name: Expose Services via Cloudflare Tunnel
@@ -215,36 +201,24 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "STARTING CLOUDFLARE TUNNELS"
-          echo "======================================================"
-
-          # Launch tunnel for Web UI (3000)
           cloudflared tunnel --url http://localhost:3000 > ui_tunnel.log 2>&1 &
-          
-          # Launch tunnel for Backend API (8000)
           cloudflared tunnel --url http://localhost:8000 > api_tunnel.log 2>&1 &
 
-          echo "Waiting for Cloudflare Public URLs to generate..."
           sleep 12
-
-          echo ""
-          echo "======================================================"
-          echo "           🌐 CLOUDFLARE PUBLIC ACCESS URLS           "
-          echo "======================================================"
 
           UI_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' ui_tunnel.log | head -n 1 || echo "Tunnel pending")
           API_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' api_tunnel.log | head -n 1 || echo "Tunnel pending")
 
-          echo ""
+          echo "======================================================"
+          echo "🌐 CLOUDFLARE PUBLIC ACCESS URLS"
+          echo "======================================================"
           echo "🚀 Web Interface URL:  $UI_URL"
           echo "🔗 Backend API URL:    $API_URL"
-          echo "📚 API Docs:           $API_URL/docs"
-          echo ""
+          echo "📚 API Docs:            $API_URL/docs"
           echo "======================================================"
 
       # ============================================================
-      # 11. KEEP RUNNING & MONITOR SERVICES
+      # 12. KEEP RUNNING & MONITOR SERVICES
       # ============================================================
 
       - name: Keep Runner Active & Stream Tunnel Logs
@@ -270,7 +244,7 @@ jobs:
           done
 
       # ============================================================
-      # 12. FAILURE DIAGNOSTICS
+      # 13. FAILURE DIAGNOSTICS
       # ============================================================
 
       - name: Failure Diagnostics
@@ -289,7 +263,7 @@ jobs:
           cat api_tunnel.log 2>&1 || true
 
       # ============================================================
-      # 13. CLEANUP
+      # 14. CLEANUP
       # ============================================================
 
       - name: Cleanup
