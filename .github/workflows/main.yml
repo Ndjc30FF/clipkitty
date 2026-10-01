@@ -564,11 +564,11 @@ jobs:
           echo "STARTING CLOUDFLARE TUNNELS"
           echo "======================================================"
 
-          # Install cloudflared
+          # Install cloudflared binary
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-          # Start 3 background tunnels with Host Header rewriting
+          # Start background tunnels with Host header rewrites
           cloudflared tunnel --url http://127.0.0.1:5173 --http-host-header 127.0.0.1:5173 > /tmp/cloudflared-ui.log 2>&1 &
           cloudflared tunnel --url http://127.0.0.1:8765 --http-host-header 127.0.0.1:8765 > /tmp/cloudflared-engine.log 2>&1 &
           cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header 127.0.0.1:11434 > /tmp/cloudflared-ollama.log 2>&1 &
