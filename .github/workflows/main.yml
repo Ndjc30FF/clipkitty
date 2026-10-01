@@ -306,18 +306,18 @@ jobs:
           echo "Creating Docker Compose Override"
           echo "=========================================="
           
-          cat > docker-compose.override.yml <<'EOF'
-          version: '3.8'
-          services:
-            ui:
-              ports:
-                - "0.0.0.0:5173:5173"
-              environment:
-                - VITE_BACKEND_URL=http://localhost:8765
-            backend:
-              ports:
-                - "0.0.0.0:8765:8765"
-          EOF
+          (
+            echo "version: '3.8'"
+            echo "services:"
+            echo "  ui:"
+            echo "    ports:"
+            echo "      - \"0.0.0.0:5173:5173\""
+            echo "    environment:"
+            echo "      - VITE_BACKEND_URL=http://localhost:8765"
+            echo "  backend:"
+            echo "    ports:"
+            echo "      - \"0.0.0.0:8765:8765\""
+          ) > docker-compose.override.yml
           
           echo "✅ Override file created"
           echo ""
