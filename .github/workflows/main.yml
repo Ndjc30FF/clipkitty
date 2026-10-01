@@ -552,36 +552,40 @@ jobs:
           echo "✅ Engine can reach Ollama."
 
       # ============================================================
-      # CONNECT TO CLOUDFLARE QUICK TUNNEL
+      # START CLOUDFLARE TUNNELS FOR ALL 3 SERVICES
       # ============================================================
 
-      - name: Start Cloudflare Quick Tunnel
+      - name: Start Cloudflare Quick Tunnels
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo "======================================================"
-          echo "STARTING CLOUDFLARE TUNNEL"
+          echo "STARTING CLOUDFLARE TUNNELS"
           echo "======================================================"
 
-          # Install cloudflared binary
+          # Install cloudflared
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-          # Start tunnel in background pointing to UI port 5173 AND rewrite the Host header
-          cloudflared tunnel --url http://127.0.0.1:5173 --http-host-header 127.0.0.1:5173 > /tmp/cloudflared.log 2>&1 &
+          # Start 3 background tunnels with Host Header rewriting
+          cloudflared tunnel --url http://127.0.0.1:5173 --http-host-header 127.0.0.1:5173 > /tmp/cloudflared-ui.log 2>&1 &
+          cloudflared tunnel --url http://127.0.0.1:8765 --http-host-header 127.0.0.1:8765 > /tmp/cloudflared-engine.log 2>&1 &
+          cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header 127.0.0.1:11434 > /tmp/cloudflared-ollama.log 2>&1 &
 
-          echo "Waiting for Cloudflare Tunnel URL..."
-          for i in {1..15}; do
-            if grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared.log > /tmp/tunnel_url.txt; then
-              echo "✅ Tunnel established!"
+          echo "Waiting for Cloudflare Tunnel URLs..."
+          for i in {1..20}; do
+            if grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared-ui.log > /tmp/ui_url.txt && \
+               grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared-engine.log > /tmp/engine_url.txt && \
+               grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared-ollama.log > /tmp/ollama_url.txt; then
+              echo "✅ All 3 Tunnels established!"
               break
             fi
             sleep 2
           done
 
       # ============================================================
-      # 17. DISPLAY FINAL STATUS
+      # DISPLAY PUBLIC ACCESS LINKS
       # ============================================================
 
       - name: Display Final Status
@@ -589,26 +593,22 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          PUBLIC_URL=$(cat /tmp/tunnel_url.txt 2>/dev/null || echo "Failed to get URL")
+          UI_URL=$(cat /tmp/ui_url.txt 2>/dev/null || echo "Failed")
+          ENGINE_URL=$(cat /tmp/engine_url.txt 2>/dev/null || echo "Failed")
+          OLLAMA_URL=$(cat /tmp/ollama_url.txt 2>/dev/null || echo "Failed")
 
           echo ""
           echo "======================================================"
-          echo "          CLIPS STUDIO IS RUNNING"
+          echo "          CLIPS STUDIO PUBLIC TUNNEL LINKS"
           echo "======================================================"
+          echo "Web UI URL:     ${UI_URL}"
+          echo "Engine API URL: ${ENGINE_URL}"
+          echo "Ollama API URL: ${OLLAMA_URL}"
+          echo "======================================================"
+          echo ""
 
-          echo ""
-          echo "Docker services:"
-          docker compose ps
-
-          echo ""
-          echo "======================================================"
-          echo "          CLOUDFLARE BROWSER ACCESS LINK"
-          echo "======================================================"
-          echo "Access Web UI at: ${PUBLIC_URL}"
-          echo "======================================================"
-          echo ""
       # ============================================================
-      # 18. KEEP RUNNING
+      # 17. KEEP RUNNING
       # ============================================================
 
       - name: Keep Clips Studio Running
@@ -628,7 +628,7 @@ jobs:
           done
 
       # ============================================================
-      # 19. FAILURE DIAGNOSTICS
+      # 18. FAILURE DIAGNOSTICS
       # ============================================================
 
       - name: Failure Diagnostics
@@ -732,7 +732,7 @@ jobs:
           echo "======================================================"
 
       # ============================================================
-      # 20. CLEANUP
+      # 19. CLEANUP
       # ============================================================
 
       - name: Cleanup
