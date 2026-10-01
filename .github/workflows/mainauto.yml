@@ -193,17 +193,18 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          cloudflared tunnel --url http://localhost:8000 > autoclip_tunnel.log 2>&1 &
+          # Pass host header so FastAPI accepts Cloudflare proxy requests
+          cloudflared tunnel --url http://127.0.0.1:8000 --http-host-header="localhost" > autoclip_tunnel.log 2>&1 &
 
-          sleep 10
+          sleep 12
 
           APP_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' autoclip_tunnel.log | head -n 1 || echo "Tunnel pending")
 
           echo "======================================================"
           echo "🌐 CLOUDFLARE PUBLIC ACCESS URL"
           echo "======================================================"
-          echo "🚀 Web Interface & API:  $APP_URL"
-          echo "📚 API Swagger Docs:      $APP_URL/docs"
+          echo "🚀 Web Interface:  $APP_URL"
+          echo "📚 API Docs:       $APP_URL/docs"
           echo "======================================================"
       # ============================================================
       # 12. KEEP RUNNING & MONITOR SERVICES
