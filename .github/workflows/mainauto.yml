@@ -152,31 +152,21 @@ jobs:
           sleep 20
 
       # ============================================================
-      # 9. VERIFY SERVICES & UI HEALTH CHECK (15 ATTEMPTS)
+      # 9. VERIFY SERVICE & WEB UI HEALTH CHECK (PORT 8000)
       # ============================================================
 
-      - name: Wait for Services and Web UI
+      - name: Wait for AutoClip Web UI & API
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "Checking Backend API (Port 8000)..."
-          for i in {1..15}; do
-            if curl -sf http://127.0.0.1:8000/api/v1/health/ > /dev/null 2>&1 || curl -sf http://127.0.0.1:8000/ > /dev/null 2>&1; then
-              echo "✅ Backend API is live!"
+          echo "Checking AutoClip Web UI and Backend on Port 8000..."
+          for i in {1..30}; do
+            if curl -sf http://127.0.0.1:8000/ > /dev/null 2>&1; then
+              echo "✅ AutoClip Web UI is live on Port 8000!"
               break
             fi
-            echo "⏳ Attempt $i/15 - Waiting for Backend API..."
-            sleep 3
-          done
-
-          echo "Checking Web UI (Port 3000)..."
-          for i in {1..15}; do
-            if curl -sL --connect-timeout 2 http://127.0.0.1:3000 > /dev/null 2>&1; then
-              echo "✅ Web UI is live!"
-              break
-            fi
-            echo "⏳ Attempt $i/15 - Waiting for Web UI..."
+            echo "⏳ Attempt $i/30 - Waiting for AutoClip to boot..."
             sleep 3
           done
 
@@ -193,7 +183,7 @@ jobs:
           sudo dpkg -i cloudflared.deb
 
       # ============================================================
-      # 11. START CLOUDFLARE TUNNELS & EXPOSE PUBLIC URLS
+      # 11. START CLOUDFLARE TUNNEL (TARGETING PORT 8000)
       # ============================================================
 
       - name: Expose Services via Cloudflare Tunnel
@@ -201,20 +191,18 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          cloudflared tunnel --url http://localhost:3000 > ui_tunnel.log 2>&1 &
-          cloudflared tunnel --url http://localhost:8000 > api_tunnel.log 2>&1 &
+          # Point tunnel to port 8000 where FastAPI serves the Web UI & API
+          cloudflared tunnel --url http://localhost:8000 > autoclip_tunnel.log 2>&1 &
 
           sleep 12
 
-          UI_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' ui_tunnel.log | head -n 1 || echo "Tunnel pending")
-          API_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' api_tunnel.log | head -n 1 || echo "Tunnel pending")
+          APP_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' autoclip_tunnel.log | head -n 1 || echo "Tunnel pending")
 
           echo "======================================================"
-          echo "🌐 CLOUDFLARE PUBLIC ACCESS URLS"
+          echo "🌐 CLOUDFLARE PUBLIC ACCESS URL"
           echo "======================================================"
-          echo "🚀 Web Interface URL:  $UI_URL"
-          echo "🔗 Backend API URL:    $API_URL"
-          echo "📚 API Docs:            $API_URL/docs"
+          echo "🚀 Web Interface & API:  $APP_URL"
+          echo "📚 API Swagger Docs:      $APP_URL/docs"
           echo "======================================================"
 
       # ============================================================
@@ -232,12 +220,12 @@ jobs:
 
           while true; do
             echo ""
-            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Health Status:"
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Service Status:"
             docker compose ps
             
-            UI_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' ui_tunnel.log | head -n 1 || echo "")
-            if [[ -n "$UI_URL" ]]; then
-              echo "Public UI Active at: $UI_URL"
+            APP_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' autoclip_tunnel.log | head -n 1 || echo "")
+            if [[ -n "$APP_URL" ]]; then
+              echo "Public UI Active at: $APP_URL"
             fi
 
             sleep 300
