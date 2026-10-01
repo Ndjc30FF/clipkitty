@@ -307,7 +307,6 @@ jobs:
           echo "=========================================="
           
           (
-            echo "version: '3.8'"
             echo "services:"
             echo "  ui:"
             echo "    ports:"
