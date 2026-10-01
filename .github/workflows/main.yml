@@ -557,6 +557,8 @@ jobs:
 
       - name: Start Cloudflare Quick Tunnel
         shell: bash
+        env:
+          __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".trycloudflare.com"
         run: |
           set -Eeuo pipefail
 
