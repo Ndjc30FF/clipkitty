@@ -1,693 +1,727 @@
-name: Clips Studio (Gemma 7B via Tailscale) - Production Ready
+name: Clips Studio - Cloud Runner
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: clips-studio-${{ github.ref }}
+  group: clips-studio-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  run-gemma-studio:
+  clips-studio:
+    name: Run Clips Studio
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
       # ============================================================
-      # 1. CHECKOUT REPOSITORY
+      # 1. CHECKOUT
       # ============================================================
-      - name: Checkout Clips Studio Repository
+
+      - name: Checkout Clips Studio
         uses: actions/checkout@v4
         with:
           repository: ColinGPT9/clips-studio
-        continue-on-error: false
+          ref: main
+          fetch-depth: 1
 
       # ============================================================
-      # 2. AUDIT REPOSITORY STRUCTURE & SECRETS
+      # 2. BASIC SYSTEM INFORMATION
       # ============================================================
-      - name: Audit Repository Structure & Validate Secrets
+
+      - name: Show Runner Information
+        shell: bash
         run: |
-          set -e
-          echo "=========================================="
-          echo "Repository Structure Audit"
-          echo "=========================================="
-          
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "CLIPS STUDIO CLOUD RUNNER"
+          echo "======================================================"
+
           echo ""
-          echo "Repository root contents:"
-          ls -la .
-          
+          echo "Working directory:"
+          pwd
+
           echo ""
-          echo "Checking for required docker-compose.yml..."
-          if [ ! -f "docker-compose.yml" ]; then
-            echo "❌ FATAL: docker-compose.yml not found in repository root"
-            echo "Current working directory: $(pwd)"
-            echo "Files present: $(ls -1)"
-            exit 1
-          fi
-          echo "✅ docker-compose.yml found"
-          
+          echo "Repository:"
+          git remote -v || true
+
           echo ""
-          echo "Analyzing docker-compose.yml structure..."
-          if ! command -v yq &> /dev/null; then
-            echo "⚠️  yq not available, installing..."
-            sudo apt-get update -qq && sudo apt-get install -y -qq yq || true
-          fi
-          
-          echo "Services defined in docker-compose.yml:"
-          docker compose config --services 2>&1 || echo "⚠️  Could not parse services (will validate on up)"
-          
+          echo "Commit:"
+          git rev-parse HEAD
+
           echo ""
-          echo "Validating docker-compose.yml syntax..."
-          docker compose config > /dev/null 2>&1 && echo "✅ docker-compose.yml is valid YAML" || {
-            echo "⚠️  docker-compose.yml may have issues, details:"
-            docker compose config 2>&1 || true
-          }
-          
+          echo "OS:"
+          uname -a
+
           echo ""
-          echo "Checking for Tailscale auth key..."
-          if [ -z "${{ secrets.TAILSCALE_AUTH_KEY }}" ]; then
-            echo "❌ FATAL: TAILSCALE_AUTH_KEY secret is not set"
-            echo "Action: Add it in Settings → Secrets and variables → Actions"
-            exit 1
-          fi
-          echo "✅ Tailscale auth key is configured"
-          
+          echo "CPU:"
+          nproc
+          lscpu | grep -E 'Model name|CPU\(s\)' || true
+
           echo ""
-          echo "✅ All repository validations passed"
+          echo "Memory:"
+          free -h
+
+          echo ""
+          echo "Disk:"
+          df -h
 
       # ============================================================
-      # 3. INSTALL DEPENDENCIES
+      # 3. VERIFY REPOSITORY ARCHITECTURE
       # ============================================================
-      - name: Install & Verify Dependencies
+
+      - name: Verify Repository Files
+        shell: bash
         run: |
-          set -e
-          echo "=========================================="
-          echo "Installing & Verifying Dependencies"
-          echo "=========================================="
-          
-          echo ""
-          echo "Updating package manager..."
-          sudo apt-get update -qq
-          
-          echo ""
-          echo "Installing curl..."
-          sudo apt-get install -y -qq curl || echo "curl already installed"
-          
-          echo ""
-          echo "Verifying Docker..."
-          docker --version || { echo "❌ Docker not available"; exit 1; }
-          docker compose version || { echo "❌ Docker Compose not available"; exit 1; }
-          
-          echo "✅ All dependencies verified"
+          set -Eeuo pipefail
 
-      # ============================================================
-      # 4. CACHE OLLAMA MODELS
-      # ============================================================
-      - name: Cache Ollama Models (Gemma 7B)
-        id: cache-ollama
-        uses: actions/cache@v4
-        with:
-          path: ~/.ollama
-          key: ollama-gemma-7b-v1
-          restore-keys: |
-            ollama-gemma-7b-
+          echo "======================================================"
+          echo "VERIFYING REPOSITORY"
+          echo "======================================================"
 
-      # ============================================================
-      # 5. INSTALL & CONFIGURE OLLAMA
-      # ============================================================
-      - name: Install & Configure Host Ollama
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Installing & Configuring Ollama"
-          echo "=========================================="
-          
-          echo ""
-          echo "Checking if Ollama is already installed..."
-          if command -v ollama &> /dev/null; then
-            echo "✅ Ollama is already installed"
-            ollama --version
-          else
-            echo "Installing Ollama..."
-            curl -fsSL https://ollama.com/install.sh | sh || {
-              echo "❌ FATAL: Failed to install Ollama"
-              exit 1
-            }
-            
-            if ! command -v ollama &> /dev/null; then
-              echo "❌ FATAL: Ollama installation failed (binary not found)"
+          required_files=(
+            "docker-compose.yml"
+            "README.md"
+            "config/settings.yaml"
+            "requirements.txt"
+            "main.py"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo ""
+              echo "❌ REQUIRED FILE MISSING: $file"
+              echo ""
+              echo "Repository root:"
+              find . -maxdepth 2 -type f | sort | head -200
               exit 1
             fi
-            echo "✅ Ollama installed successfully"
-          fi
-          
+
+            echo "✅ Found: $file"
+          done
+
           echo ""
-          echo "Configuring Ollama environment variables..."
-          export OLLAMA_HOST="0.0.0.0:11434"
-          export OLLAMA_MAX_LOADED_MODELS=2
-          export OLLAMA_NUM_PARALLEL=2
-          echo "✅ Environment variables set"
-          
+          echo "======================================================"
+          echo "ACTUAL COMPOSE SERVICES"
+          echo "======================================================"
+
+          grep -E '^[[:space:]]{2}[a-zA-Z0-9_-]+:' docker-compose.yml || true
+
           echo ""
-          echo "Starting Ollama service..."
-          ollama serve > /tmp/ollama.log 2>&1 &
-          OLLAMA_PID=$!
-          echo "Ollama PID: $OLLAMA_PID"
-          sleep 3
-          
+          echo "Compose file:"
+          sed -n '1,240p' docker-compose.yml
+
+      # ============================================================
+      # 4. INSTALL / VERIFY DOCKER
+      # ============================================================
+
+      - name: Verify Docker
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "DOCKER"
+          echo "======================================================"
+
+          docker --version
+          docker compose version
+
           echo ""
-          echo "Waiting for Ollama API to become ready (timeout: 60s)..."
-          OLLAMA_READY=0
+          echo "Docker info:"
+          docker info
+
+      # ============================================================
+      # 5. VALIDATE THE REPOSITORY'S ORIGINAL COMPOSE FILE
+      #
+      # IMPORTANT:
+      # Do NOT create a custom compose override.
+      # Do NOT create backend.
+      # Do NOT rename engine -> backend.
+      # ============================================================
+
+      - name: Validate Original Docker Compose
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "VALIDATING ORIGINAL DOCKER COMPOSE"
+          echo "======================================================"
+
+          echo ""
+          echo "Services:"
+          docker compose config --services
+
+          echo ""
+          echo "Checking expected services..."
+
+          services="$(docker compose config --services)"
+
+          for service in engine ui ollama; do
+            if ! grep -qx "$service" <<< "$services"; then
+              echo "❌ Expected service '$service' was not found."
+              echo ""
+              echo "Actual services:"
+              echo "$services"
+              exit 1
+            fi
+
+            echo "✅ $service"
+          done
+
+          echo ""
+          echo "Checking that every service has image or build..."
+
+          docker compose config > /tmp/clips-compose-config.yml
+
+          python3 - <<'PY'
+          import yaml
+
+          with open("/tmp/clips-compose-config.yml", "r", encoding="utf-8") as f:
+              data = yaml.safe_load(f)
+
+          services = data.get("services", {})
+
+          if not services:
+              raise SystemExit("❌ No services found")
+
+          for name, service in services.items():
+              image = service.get("image")
+              build = service.get("build")
+
+              print(f"{name}: image={bool(image)}, build={bool(build)}")
+
+              if not image and not build:
+                  raise SystemExit(
+                      f"❌ Service '{name}' has neither image nor build"
+                  )
+
+          print("✅ Every service has image and/or build")
+          PY
+
+          echo ""
+          echo "======================================================"
+          echo "FULL RESOLVED COMPOSE CONFIG"
+          echo "======================================================"
+
+          cat /tmp/clips-compose-config.yml
+
+      # ============================================================
+      # 6. PULL PREBUILT IMAGES
+      #
+      # The repository explicitly provides a prebuilt engine image.
+      # ============================================================
+
+      - name: Pull Docker Images
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "PULLING CLIPS STUDIO IMAGES"
+          echo "======================================================"
+
+          docker compose pull
+
+      # ============================================================
+      # 7. START THE ORIGINAL STACK
+      # ============================================================
+
+      - name: Start Clips Studio
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "STARTING CLIPS STUDIO"
+          echo "======================================================"
+
+          docker compose up -d
+
+          echo ""
+          echo "Compose startup completed."
+
+      # ============================================================
+      # 8. SHOW CONTAINER STATUS
+      # ============================================================
+
+      - name: Check Container Status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "CONTAINER STATUS"
+          echo "======================================================"
+
+          docker compose ps -a
+
+          echo ""
+          echo "All Docker containers:"
+          docker ps -a
+
+          echo ""
+          echo "Docker volumes:"
+          docker volume ls
+
+      # ============================================================
+      # 9. WAIT FOR OLLAMA
+      # ============================================================
+
+      - name: Wait For Ollama
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "WAITING FOR OLLAMA"
+          echo "======================================================"
+
           for i in {1..60}; do
-            if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-              echo "✅ Ollama API is ready"
-              OLLAMA_READY=1
+            if docker compose exec -T ollama \
+              ollama list >/tmp/ollama-list.txt 2>/tmp/ollama-error.txt; then
+
+              echo "✅ Ollama container is ready."
+              cat /tmp/ollama-list.txt || true
               break
             fi
-            if [ $((i % 10)) -eq 0 ]; then
-              echo "   Attempt $i/60..."
-            fi
-            sleep 1
-          done
-          
-          if [ $OLLAMA_READY -eq 0 ]; then
-            echo "❌ FATAL: Ollama API did not become ready within 60 seconds"
-            echo "Ollama logs:"
-            cat /tmp/ollama.log || true
-            exit 1
-          fi
-          
-          echo ""
-          echo "Checking cache status for Gemma 7B model..."
-          if [ -d "$HOME/.ollama/models" ]; then
-            echo "Cache directory exists, checking for gemma..."
-            ls -lh "$HOME/.ollama/models" 2>/dev/null || true
-          fi
-          
-          echo ""
-          echo "Pulling Gemma 7B model (this may take several minutes on first run)..."
-          if ! ollama pull gemma:7b; then
-            echo "❌ FATAL: Failed to pull Gemma 7B model"
-            echo "Ollama logs:"
-            cat /tmp/ollama.log || true
-            exit 1
-          fi
-          echo "✅ Gemma 7B model pulled successfully"
-          
-          echo ""
-          echo "Verifying model is loaded..."
-          MODEL_LIST=$(curl -s http://localhost:11434/api/tags)
-          if echo "$MODEL_LIST" | grep -q "gemma"; then
-            echo "✅ Gemma 7B model verified and available"
-          else
-            echo "⚠️  WARNING: Model may not be fully loaded, but continuing"
-            echo "Model list response: $MODEL_LIST"
-          fi
 
-      # ============================================================
-      # 6. CONNECT TO TAILSCALE
-      # ============================================================
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          hostname: clips-studio-runner-${{ github.run_id }}
-        continue-on-error: false
-
-      # ============================================================
-      # 7. VERIFY TAILSCALE CONNECTION
-      # ============================================================
-      - name: Verify Tailscale Connection
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Verifying Tailscale Connection"
-          echo "=========================================="
-          
-          echo ""
-          echo "Checking Tailscale status..."
-          sleep 2
-          
-          TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
-          
-          if [ -z "$TS_IP" ]; then
-            echo "❌ FATAL: Failed to obtain Tailscale IP"
-            echo "Tailscale status:"
-            tailscale status || true
-            exit 1
-          fi
-          
-          echo "✅ Tailscale IP assigned: $TS_IP"
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          
-          echo ""
-          echo "Full Tailscale status:"
-          tailscale status || true
-
-      # ============================================================
-      # 8. VALIDATE & INSPECT DOCKER-COMPOSE
-      # ============================================================
-      - name: Validate & Inspect Docker-Compose Configuration
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Docker-Compose Configuration Validation"
-          echo "=========================================="
-          
-          echo ""
-          echo "Validating docker-compose.yml syntax..."
-          if ! docker compose config > /tmp/docker-compose-validated.yml 2>&1; then
-            echo "❌ FATAL: docker-compose.yml has syntax errors"
-            cat /tmp/docker-compose-validated.yml
-            exit 1
-          fi
-          echo "✅ docker-compose.yml syntax is valid"
-          
-          echo ""
-          echo "Extracting service definitions..."
-          docker compose config --services 2>&1 | while read service; do
-            echo "  - Service: $service"
-          done
-          
-          echo ""
-          echo "Detailed configuration:"
-          docker compose config 2>&1 | head -100
-          
-          echo ""
-          echo "Checking for image/build in each service..."
-          SERVICES=$(docker compose config --services 2>&1)
-          
-          while IFS= read -r service; do
-            echo ""
-            echo "Service: $service"
-            HAS_IMAGE=$(docker compose config | grep -A 20 "^  $service:" | grep "image:" || echo "")
-            HAS_BUILD=$(docker compose config | grep -A 20 "^  $service:" | grep "build:" || echo "")
-            
-            if [ -z "$HAS_IMAGE" ] && [ -z "$HAS_BUILD" ]; then
-              echo "  ⚠️  WARNING: Service '$service' has no image or build context"
-              echo "     This will cause: 'service has neither an image nor a build context specified'"
-            else
-              if [ -n "$HAS_IMAGE" ]; then
-                echo "  ✅ Has image definition"
-              fi
-              if [ -n "$HAS_BUILD" ]; then
-                echo "  ✅ Has build context"
-              fi
-            fi
-          done <<< "$SERVICES"
-
-      # ============================================================
-      # 9. PREPARE DOCKER COMPOSE OVERRIDE
-      # ============================================================
-      - name: Create Docker Compose Override
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Creating Docker Compose Override"
-          echo "=========================================="
-          
-          (
-            echo "services:"
-            echo "  ui:"
-            echo "    ports:"
-            echo "      - \"0.0.0.0:5173:5173\""
-            echo "    environment:"
-            echo "      - VITE_BACKEND_URL=http://localhost:8765"
-            echo "  backend:"
-            echo "    ports:"
-            echo "      - \"0.0.0.0:8765:8765\""
-          ) > docker-compose.override.yml
-          
-          echo "✅ Override file created"
-          echo ""
-          echo "Override file content:"
-          cat docker-compose.override.yml
-
-      # ============================================================
-      # 10. DETECT & CONFIGURE DOCKER GATEWAY
-      # ============================================================
-      - name: Detect & Configure Docker Gateway
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Docker Gateway Detection & Configuration"
-          echo "=========================================="
-          
-          echo ""
-          echo "Detecting Docker gateway IP..."
-          
-          DOCKER_GATEWAY=$(ip route show dev docker0 2>/dev/null | awk '/default/ {print $3}' || echo "")
-          
-          if [ -z "$DOCKER_GATEWAY" ]; then
-            echo "⚠️  Could not detect gateway via docker0, trying alternative methods..."
-            DOCKER_GATEWAY=$(docker network inspect bridge -f '{{index .IPAM.Config 0 .Gateway}}' 2>/dev/null || echo "")
-          fi
-          
-          if [ -z "$DOCKER_GATEWAY" ]; then
-            echo "⚠️  Could not detect gateway, using hardcoded default"
-            DOCKER_GATEWAY="172.17.0.1"
-          fi
-          
-          echo "✅ Docker Gateway IP: $DOCKER_GATEWAY"
-          echo "DOCKER_GATEWAY=$DOCKER_GATEWAY" >> $GITHUB_ENV
-          
-          echo ""
-          echo "Docker network status:"
-          docker network ls || true
-
-      # ============================================================
-      # 11. START CLIPS STUDIO STACK
-      # ============================================================
-      - name: Start Clips Studio (Docker Compose)
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Starting Clips Studio Stack"
-          echo "=========================================="
-          
-          DOCKER_GATEWAY="${{ env.DOCKER_GATEWAY }}"
-          echo "Using Docker Gateway: $DOCKER_GATEWAY"
-          
-          export OLLAMA_HOST="http://$DOCKER_GATEWAY:11434"
-          echo "Ollama Host for containers: $OLLAMA_HOST"
-          
-          echo ""
-          echo "Pulling latest images..."
-          if ! docker compose -f docker-compose.yml -f docker-compose.override.yml pull 2>&1 | tee /tmp/docker-pull.log; then
-            echo "❌ WARNING: docker compose pull had issues"
-            echo "Pull log:"
-            cat /tmp/docker-pull.log || true
-          fi
-          
-          echo ""
-          echo "Starting Docker services (excluding built-in Ollama)..."
-          if ! OLLAMA_HOST="$OLLAMA_HOST" docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --scale ollama=0 2>&1 | tee /tmp/docker-up.log; then
-            echo "❌ FATAL: docker compose up failed"
-            echo "Error log:"
-            cat /tmp/docker-up.log || true
-            echo ""
-            echo "Attempting diagnostics..."
-            docker compose -f docker-compose.yml -f docker-compose.override.yml logs || true
-            exit 1
-          fi
-          echo "✅ Docker compose up completed"
-          
-          echo ""
-          echo "Waiting 15 seconds for services to stabilize..."
-          sleep 15
-          
-          echo ""
-          echo "Docker containers status:"
-          docker compose -f docker-compose.yml -f docker-compose.override.yml ps -a
-          
-          echo ""
-          echo "Checking for failed containers..."
-          FAILED=$(docker compose -f docker-compose.yml -f docker-compose.override.yml ps -q --filter 'status=exited' || echo "")
-          if [ -n "$FAILED" ]; then
-            echo "⚠️  WARNING: Found exited containers"
-            docker compose -f docker-compose.yml -f docker-compose.override.yml logs || true
-          fi
-
-      # ============================================================
-      # 12. WAIT FOR UI TO BE READY
-      # ============================================================
-      - name: Wait for Clips Studio UI
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Waiting for UI Service"
-          echo "=========================================="
-          
-          echo ""
-          echo "UI readiness check (timeout: 120 seconds)..."
-          UI_READY=0
-          for i in {1..60}; do
-            if curl -sf http://127.0.0.1:5173 > /dev/null 2>&1; then
-              echo "✅ UI is ready on port 5173"
-              UI_READY=1
-              break
-            fi
-            if [ $((i % 6)) -eq 0 ] || [ $i -eq 1 ]; then
-              echo "   Attempt $i/60 - waiting..."
-            fi
+            echo "Waiting for Ollama... $i/60"
             sleep 2
+
+            if [[ "$i" == "60" ]]; then
+              echo ""
+              echo "❌ Ollama did not become ready."
+              cat /tmp/ollama-error.txt || true
+              docker compose logs --tail=200 ollama || true
+              exit 1
+            fi
           done
-          
-          if [ $UI_READY -eq 0 ]; then
-            echo "❌ FATAL: UI did not respond within 120 seconds"
+
+      # ============================================================
+      # 10. PULL GEMMA 7B
+      #
+      # IMPORTANT:
+      # Use the repository's actual model tag.
+      # ============================================================
+
+      - name: Install Gemma 7B In Ollama
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "INSTALLING GEMMA 7B"
+          echo "======================================================"
+
+          echo ""
+          echo "Current Ollama models:"
+          docker compose exec -T ollama ollama list || true
+
+          echo ""
+          echo "Pulling gemma:7b..."
+
+          docker compose exec -T ollama ollama pull gemma:7b
+
+          echo ""
+          echo "Models after pull:"
+          docker compose exec -T ollama ollama list
+
+      # ============================================================
+      # 11. VERIFY GEMMA 7B
+      # ============================================================
+
+      - name: Verify Gemma 7B
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "VERIFYING GEMMA 7B"
+          echo "======================================================"
+
+          models="$(docker compose exec -T ollama ollama list)"
+
+          echo "$models"
+
+          if ! grep -q "gemma:7b" <<< "$models"; then
             echo ""
-            echo "Docker logs:"
-            docker compose -f docker-compose.yml -f docker-compose.override.yml logs || true
+            echo "❌ gemma:7b is not installed."
             exit 1
           fi
 
-      # ============================================================
-      # 13. VERIFY PORT BINDINGS
-      # ============================================================
-      - name: Verify Port Bindings
-        run: |
-          set -e
-          echo "=========================================="
-          echo "Verifying Port Bindings"
-          echo "=========================================="
-          
           echo ""
-          echo "Listening ports (ss -lntp):"
-          sudo ss -lntp 2>&1 | grep -E ':(5173|8765|11434)' || echo "⚠️  Some ports not found in ss output (this may be OK)"
-          
+          echo "✅ gemma:7b is installed."
+
           echo ""
-          echo "Docker port mappings:"
-          docker compose -f docker-compose.yml -f docker-compose.override.yml ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || true
-          
-          echo ""
-          echo "Checking for 0.0.0.0 binding (required for Tailscale access)..."
-          if docker compose -f docker-compose.yml -f docker-compose.override.yml ps --format "{{.Ports}}" | grep -q "0.0.0.0"; then
-            echo "✅ Found 0.0.0.0 port bindings"
-          else
-            echo "⚠️️  WARNING: No 0.0.0.0 port bindings detected"
-            docker compose -f docker-compose.yml -f docker-compose.override.yml ps -a || true
-          fi
+          echo "Testing Ollama model execution..."
+
+          docker compose exec -T ollama \
+            ollama run gemma:7b "Reply with exactly: CLIPS_STUDIO_GEMMA_OK"
 
       # ============================================================
-      # 14. TEST LOCAL CONNECTIVITY
+      # 12. WAIT FOR ENGINE
       # ============================================================
-      - name: Test Local Connectivity
-        run: |
-          echo "=========================================="
-          echo "Testing Local Connectivity"
-          echo "=========================================="
-          
-          echo ""
-          echo "Testing UI (localhost:5173)..."
-          UI_RESPONSE=$(curl -I http://127.0.0.1:5173 2>&1 || echo "FAILED")
-          if echo "$UI_RESPONSE" | grep -q "200\|301\|302\|304"; then
-            echo "✅ UI responds"
-          else
-            echo "⚠️  UI may not be responding correctly"
-          fi
-          echo "$UI_RESPONSE" | head -5
-          
-          echo ""
-          echo "Testing Backend (localhost:8765)..."
-          BACKEND_RESPONSE=$(curl -I http://127.0.0.1:8765 2>&1 || echo "FAILED")
-          if echo "$BACKEND_RESPONSE" | grep -q "200\|301\|302\|304\|404"; then
-            echo "✅ Backend responds"
-          else
-            echo "⚠️  Backend may not be responding"
-          fi
-          echo "$BACKEND_RESPONSE" | head -5
-          
-          echo ""
-          echo "Testing Ollama (localhost:11434)..."
-          OLLAMA_RESPONSE=$(curl -s http://127.0.0.1:11434/api/tags 2>&1 || echo "FAILED")
-          if echo "$OLLAMA_RESPONSE" | grep -q "models"; then
-            echo "✅ Ollama responds"
-          else
-            echo "⚠️  Ollama may not be responding correctly"
-          fi
-          echo "$OLLAMA_RESPONSE" | head -3
 
-      # ============================================================
-      # 15. TEST TAILSCALE CONNECTIVITY
-      # ============================================================
-      - name: Test Tailscale Connectivity
+      - name: Wait For Engine API
+        shell: bash
         run: |
-          echo "=========================================="
-          echo "Testing Tailscale Connectivity"
-          echo "=========================================="
-          
-          TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
-          if [ -z "$TS_IP" ]; then
-            echo "❌ ERROR: Tailscale IP not available"
-            exit 1
-          fi
-          
-          echo "Tailscale IP: $TS_IP"
-          echo ""
-          
-          echo "Testing UI via Tailscale (http://$TS_IP:5173)..."
-          HTTP_CODE=$(curl \
-            --connect-timeout 10 \
-            --max-time 20 \
-            -s \
-            -o /tmp/ts-ui-response.html \
-            -w "%{http_code}" \
-            "http://$TS_IP:5173" 2>&1 || echo "000")
-          
-          echo "HTTP Response Code: $HTTP_CODE"
-          
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
-            echo "✅ UI is reachable via Tailscale"
-          else
-            echo "⚠️  UI HTTP code is $HTTP_CODE (may still be initializing)"
-          fi
+          set -Eeuo pipefail
 
-      # ============================================================
-      # 16. DISPLAY ACCESS INFORMATION
-      # ============================================================
-      - name: Display Access Information
-        run: |
-          TS_IP=$(tailscale ip -4 2>/dev/null || echo "UNKNOWN")
-          
-          echo ""
           echo "======================================================"
-          echo "           ✅ CLIPS STUDIO IS READY"
-          echo "======================================================"
-          echo ""
-          echo "Web Interface:   http://$TS_IP:5173"
-          echo "Backend API:     http://$TS_IP:8765"
-          echo "Ollama API:      http://$TS_IP:11434"
-          echo ""
-          echo "======================================================"
-          echo "INSTRUCTIONS:"
-          echo "1. Ensure Tailscale is connected on your device"
-          echo "2. Open the URL above in your browser"
-          echo "3. Do NOT stop this workflow while using Clips Studio"
+          echo "WAITING FOR ENGINE API"
           echo "======================================================"
 
+          for i in {1..90}; do
+            if curl -fsS \
+              --connect-timeout 3 \
+              --max-time 5 \
+              http://127.0.0.1:8765/health \
+              >/tmp/engine-health.json 2>/tmp/engine-error.txt; then
+
+              echo "✅ Engine responded."
+              cat /tmp/engine-health.json
+              break
+            fi
+
+            echo "Waiting for engine... $i/90"
+            sleep 2
+
+            if [[ "$i" == "90" ]]; then
+              echo ""
+              echo "❌ Engine did not become ready."
+
+              echo ""
+              echo "--- ENGINE LOGS ---"
+              docker compose logs --tail=300 engine || true
+
+              echo ""
+              echo "--- ENGINE ERROR ---"
+              cat /tmp/engine-error.txt || true
+
+              exit 1
+            fi
+          done
+
       # ============================================================
-      # 17. KEEP WORKFLOW RUNNING
+      # 13. VERIFY ENGINE SYSTEM STATUS
       # ============================================================
+
+      - name: Verify Engine System
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "ENGINE SYSTEM CHECK"
+          echo "======================================================"
+
+          echo ""
+          echo "GET /health:"
+          curl -fsS http://127.0.0.1:8765/health || true
+
+          echo ""
+          echo "GET /system/check:"
+          curl -fsS http://127.0.0.1:8765/system/check || true
+
+          echo ""
+          echo "GET /system/stats:"
+          curl -fsS http://127.0.0.1:8765/system/stats || true
+
+          echo ""
+          echo "GET /models:"
+          curl -fsS http://127.0.0.1:8765/models || true
+
+      # ============================================================
+      # 14. WAIT FOR UI
+      # ============================================================
+
+      - name: Wait For Web UI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "WAITING FOR WEB UI"
+          echo "======================================================"
+
+          for i in {1..90}; do
+            if curl -fsS \
+              --connect-timeout 3 \
+              --max-time 5 \
+              http://127.0.0.1:5173 \
+              >/tmp/ui.html 2>/tmp/ui-error.txt; then
+
+              echo "✅ Web UI responded."
+
+              head -c 500 /tmp/ui.html || true
+
+              break
+            fi
+
+            echo "Waiting for UI... $i/90"
+            sleep 2
+
+            if [[ "$i" == "90" ]]; then
+              echo ""
+              echo "❌ UI did not become ready."
+
+              echo ""
+              echo "--- UI LOGS ---"
+              docker compose logs --tail=300 ui || true
+
+              echo ""
+              echo "--- UI ERROR ---"
+              cat /tmp/ui-error.txt || true
+
+              exit 1
+            fi
+          done
+
+      # ============================================================
+      # 15. VERIFY PORTS
+      # ============================================================
+
+      - name: Verify Local Ports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "PORT VERIFICATION"
+          echo "======================================================"
+
+          echo ""
+          echo "--- Docker Compose Ports ---"
+          docker compose ps
+
+          echo ""
+          echo "--- Listening TCP Ports ---"
+          sudo ss -lntp || true
+
+          echo ""
+          echo "--- UI ---"
+          curl -I http://127.0.0.1:5173 || true
+
+          echo ""
+          echo "--- ENGINE ---"
+          curl -I http://127.0.0.1:8765 || true
+
+          echo ""
+          echo "--- OLLAMA ---"
+          curl -fsS http://127.0.0.1:11434/api/tags || true
+
+      # ============================================================
+      # 16. CHECK ENGINE -> OLLAMA NETWORK
+      # ============================================================
+
+      - name: Verify Engine To Ollama Connectivity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "ENGINE -> OLLAMA NETWORK TEST"
+          echo "======================================================"
+
+          docker compose exec -T engine \
+            python - <<'PY'
+          import os
+          import urllib.request
+
+          urls = [
+              os.environ.get(
+                  "CLIPS_STUDIO_OLLAMA_HOST",
+                  "http://ollama:11434"
+              ) + "/api/tags"
+          ]
+
+          for url in urls:
+              print("Testing:", url)
+              with urllib.request.urlopen(url, timeout=15) as response:
+                  body = response.read().decode("utf-8")
+                  print("HTTP:", response.status)
+                  print(body[:2000])
+          PY
+
+          echo ""
+          echo "✅ Engine can reach Ollama."
+
+      # ============================================================
+      # 17. DISPLAY FINAL STATUS
+      # ============================================================
+
+      - name: Display Final Status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo ""
+          echo "======================================================"
+          echo "          CLIPS STUDIO IS RUNNING"
+          echo "======================================================"
+
+          echo ""
+          echo "Runner hostname:"
+          hostname
+
+          echo ""
+          echo "Docker services:"
+          docker compose ps
+
+          echo ""
+          echo "Local endpoints:"
+          echo "UI:     http://127.0.0.1:5173"
+          echo "Engine: http://127.0.0.1:8765"
+          echo "Ollama: http://127.0.0.1:11434"
+
+          echo ""
+          echo "IMPORTANT:"
+          echo "The repository intentionally binds the API/UI to localhost."
+          echo "Do not expose the unauthenticated engine API directly."
+          echo ""
+
+      # ============================================================
+      # 18. KEEP RUNNING
+      # ============================================================
+
       - name: Keep Clips Studio Running
+        shell: bash
         run: |
-          TS_IP=$(tailscale ip -4 2>/dev/null || echo "UNKNOWN")
-          
-          echo "=========================================="
-          echo "🎬 CLIPS STUDIO IS RUNNING"
-          echo "=========================================="
-          echo ""
-          echo "Access: http://$TS_IP:5173"
-          echo ""
-          echo "This workflow will remain active until:"
-          echo "1. You manually cancel it, or"
-          echo "2. 6 hours pass (GitHub's hard limit)"
-          echo ""
-          echo "=========================================="
-          echo ""
-          
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "KEEPING CLIPS STUDIO ALIVE"
+          echo "======================================================"
+
           while true; do
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Clips Studio active | URL: http://$TS_IP:5173"
+            echo ""
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Clips Studio status:"
+            docker compose ps
             sleep 300
           done
 
       # ============================================================
-      # 18. COMPREHENSIVE FAILURE DIAGNOSTICS
+      # 19. FAILURE DIAGNOSTICS
       # ============================================================
-      - name: Comprehensive Failure Diagnostics
+
+      - name: Failure Diagnostics
         if: failure()
+        shell: bash
         run: |
           echo ""
           echo "======================================================"
-          echo "           ❌ WORKFLOW FAILURE ANALYSIS"
+          echo "        CLIPS STUDIO FAILURE DIAGNOSTICS"
           echo "======================================================"
-          
+
           echo ""
-          echo "--- Working Directory ---"
-          pwd
-          ls -la
-          
+          echo "========== GIT =========="
+          git rev-parse HEAD 2>&1 || true
+          git status 2>&1 || true
+
           echo ""
-          echo "--- Docker-Compose Files ---"
-          echo "docker-compose.yml:"
-          head -50 docker-compose.yml || echo "Not found"
+          echo "========== FILES =========="
+          ls -la 2>&1 || true
+
           echo ""
-          echo "docker-compose.override.yml:"
-          cat docker-compose.override.yml || echo "Not found"
-          
+          echo "========== DOCKER VERSION =========="
+          docker --version 2>&1 || true
+          docker compose version 2>&1 || true
+
           echo ""
-          echo "--- Environment Variables ---"
-          env | grep -i docker || true
-          env | grep -i ollama || true
-          env | grep -i tailscale || true
-          
+          echo "========== DOCKER PS =========="
+          docker ps -a 2>&1 || true
+
           echo ""
-          echo "--- Docker Status ---"
-          docker --version || true
-          docker compose version || true
-          docker ps -a || true
-          
+          echo "========== COMPOSE SERVICES =========="
+          docker compose config --services 2>&1 || true
+
           echo ""
-          echo "--- Docker Compose Logs ---"
-          docker compose -f docker-compose.yml -f docker-compose.override.yml logs --tail=100 2>&1 || true
-          
+          echo "========== COMPOSE CONFIG =========="
+          docker compose config 2>&1 || true
+
           echo ""
-          echo "--- Individual Service Logs ---"
-          docker compose -f docker-compose.yml -f docker-compose.override.yml logs ui 2>&1 | tail -50 || true
-          docker compose -f docker-compose.yml -f docker-compose.override.yml logs backend 2>&1 | tail -50 || true
-          
+          echo "========== COMPOSE PS =========="
+          docker compose ps -a 2>&1 || true
+
           echo ""
-          echo "--- Ollama Logs ---"
-          if [ -f /tmp/ollama.log ]; then
-            echo "Ollama service log:"
-            tail -100 /tmp/ollama.log || true
-          fi
-          
+          echo "========== ENGINE LOGS =========="
+          docker compose logs --tail=300 engine 2>&1 || true
+
           echo ""
-          echo "--- Docker Compose Pull Log ---"
-          if [ -f /tmp/docker-pull.log ]; then
-            tail -50 /tmp/docker-pull.log || true
-          fi
-          
+          echo "========== UI LOGS =========="
+          docker compose logs --tail=300 ui 2>&1 || true
+
           echo ""
-          echo "--- Docker Compose Up Log ---"
-          if [ -f /tmp/docker-up.log ]; then
-            tail -50 /tmp/docker-up.log || true
-          fi
-          
+          echo "========== OLLAMA LOGS =========="
+          docker compose logs --tail=300 ollama 2>&1 || true
+
           echo ""
-          echo "--- Network Interfaces ---"
-          ip addr show || true
-          
+          echo "========== OLLAMA MODELS =========="
+          docker compose exec -T ollama ollama list 2>&1 || true
+
           echo ""
-          echo "--- Listening Ports ---"
-          sudo ss -lntp 2>&1 || netstat -lntp 2>&1 || true
-          
+          echo "========== ENGINE HEALTH =========="
+          curl -v \
+            --connect-timeout 5 \
+            --max-time 10 \
+            http://127.0.0.1:8765/health \
+            2>&1 || true
+
           echo ""
-          echo "--- Docker Network Inspection ---"
-          docker network inspect bridge 2>&1 | head -100 || true
-          
+          echo "========== UI =========="
+          curl -v \
+            --connect-timeout 5 \
+            --max-time 10 \
+            http://127.0.0.1:5173 \
+            2>&1 || true
+
           echo ""
-          echo "--- Tailscale Status ---"
-          tailscale status 2>&1 || true
-          
+          echo "========== OLLAMA =========="
+          curl -v \
+            --connect-timeout 5 \
+            --max-time 10 \
+            http://127.0.0.1:11434/api/tags \
+            2>&1 || true
+
+          echo ""
+          echo "========== PORTS =========="
+          sudo ss -lntp 2>&1 || true
+
+          echo ""
+          echo "========== MEMORY =========="
+          free -h 2>&1 || true
+
+          echo ""
+          echo "========== DISK =========="
+          df -h 2>&1 || true
+
+          echo ""
+          echo "========== DOCKER VOLUMES =========="
+          docker volume ls 2>&1 || true
+
           echo ""
           echo "======================================================"
-          echo "End of diagnostic report"
+          echo "END OF FAILURE DIAGNOSTICS"
           echo "======================================================"
 
       # ============================================================
-      # 19. CLEANUP & SHUTDOWN
+      # 20. CLEANUP
       # ============================================================
-      - name: Cleanup & Shutdown
+
+      - name: Cleanup
         if: always()
+        shell: bash
         run: |
-          echo "=========================================="
-          echo "Cleanup & Shutdown"
-          echo "=========================================="
-          
-          echo ""
-          echo "Stopping Docker services..."
-          docker compose -f docker-compose.yml -f docker-compose.override.yml down 2>&1 || true
-          
-          echo ""
-          echo "✅ Cleanup complete"
+          echo "======================================================"
+          echo "CLEANUP"
+          echo "======================================================"
+
+          docker compose down 2>&1 || true
+
+          echo "Docker containers stopped."
