@@ -54,13 +54,13 @@ jobs:
           fi
           
           echo "Services defined in docker-compose.yml:"
-          docker-compose config --services 2>&1 || echo "⚠️  Could not parse services (will validate on up)"
+          docker compose config --services 2>&1 || echo "⚠️  Could not parse services (will validate on up)"
           
           echo ""
           echo "Validating docker-compose.yml syntax..."
-          docker-compose config > /dev/null 2>&1 && echo "✅ docker-compose.yml is valid YAML" || {
+          docker compose config > /dev/null 2>&1 && echo "✅ docker-compose.yml is valid YAML" || {
             echo "⚠️  docker-compose.yml may have issues, details:"
-            docker-compose config 2>&1 || true
+            docker compose config 2>&1 || true
           }
           
           echo ""
@@ -74,7 +74,6 @@ jobs:
           
           echo ""
           echo "✅ All repository validations passed"
-
       # ============================================================
       # 3. INSTALL DEPENDENCIES
       # ============================================================
@@ -256,7 +255,7 @@ jobs:
           
           echo ""
           echo "Validating docker-compose.yml syntax..."
-          if ! docker-compose config > /tmp/docker-compose-validated.yml 2>&1; then
+          if ! docker compose config > /tmp/docker-compose-validated.yml 2>&1; then
             echo "❌ FATAL: docker-compose.yml has syntax errors"
             cat /tmp/docker-compose-validated.yml
             exit 1
@@ -265,23 +264,23 @@ jobs:
           
           echo ""
           echo "Extracting service definitions..."
-          docker-compose config --services 2>&1 | while read service; do
+          docker compose config --services 2>&1 | while read service; do
             echo "  - Service: $service"
           done
           
           echo ""
           echo "Detailed configuration:"
-          docker-compose config 2>&1 | head -100
+          docker compose config 2>&1 | head -100
           
           echo ""
           echo "Checking for image/build in each service..."
-          SERVICES=$(docker-compose config --services 2>&1)
+          SERVICES=$(docker compose config --services 2>&1)
           
           while IFS= read -r service; do
             echo ""
             echo "Service: $service"
-            HAS_IMAGE=$(docker-compose config | grep -A 20 "^  $service:" | grep "image:" || echo "")
-            HAS_BUILD=$(docker-compose config | grep -A 20 "^  $service:" | grep "build:" || echo "")
+            HAS_IMAGE=$(docker compose config | grep -A 20 "^  $service:" | grep "image:" || echo "")
+            HAS_BUILD=$(docker compose config | grep -A 20 "^  $service:" | grep "build:" || echo "")
             
             if [ -z "$HAS_IMAGE" ] && [ -z "$HAS_BUILD" ]; then
               echo "  ⚠️  WARNING: Service '$service' has no image or build context"
