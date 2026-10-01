@@ -41,38 +41,12 @@ jobs:
           echo "AUTOCLIP - AI VIDEO INTELLIGENT CLIPPING SYSTEM"
           echo "======================================================"
 
-          echo ""
-          echo "Working directory:"
-          pwd
-
-          echo ""
-          echo "Repository:"
-          git remote -v || true
-
-          echo ""
-          echo "Commit:"
-          git rev-parse HEAD
-
-          echo ""
-          echo "OS Information:"
-          uname -a
-
-          echo ""
-          echo "CPU:"
-          nproc
-          lscpu | grep -E 'Model name|CPU\(s\)' || true
-
-          echo ""
-          echo "Memory:"
+          echo "Working directory: $(pwd)"
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "OS: $(uname -a)"
+          echo "CPU cores: $(nproc)"
           free -h
-
-          echo ""
-          echo "Disk:"
           df -h
-
-          echo ""
-          echo "Directory Structure:"
-          find . -maxdepth 2 -type f -name "*.yml" -o -name "*.yaml" -o -name "*.py" -o -name "*.json" | grep -E "(docker-compose|requirements|package\.json|main\.py)" | head -20
 
       # ============================================================
       # 3. VERIFY REPOSITORY STRUCTURE
@@ -83,31 +57,15 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "VERIFYING AUTOCLIP REPOSITORY STRUCTURE"
-          echo "======================================================"
-
-          required_files=(
-            "docker-compose.yml"
-            "env.example"
-            "README-EN.md"
-          )
-
+          required_files=("docker-compose.yml" "env.example" "README-EN.md")
           for file in "${required_files[@]}"; do
             if [[ ! -f "$file" ]]; then
-              echo ""
               echo "❌ REQUIRED FILE MISSING: $file"
-              echo ""
-              echo "Repository root contents:"
               ls -la
               exit 1
             fi
-
             echo "✅ Found: $file"
           done
-
-          echo ""
-          echo "Project structure verified successfully."
 
       # ============================================================
       # 4. SETUP ENVIRONMENT VARIABLES
@@ -118,112 +76,32 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "ENVIRONMENT SETUP"
-          echo "======================================================"
-
-          # Copy example env file
           cp env.example .env
 
-          # Default configuration for Qwen 2.5 7B with Ollama
           cat >> .env << 'EOF'
 
           # ===== LLM CONFIGURATION =====
           LLM_PROVIDER=ollama
           API_MODEL_NAME=qwen2.5:7b
 
-          # For Ollama (local, no API key required)
+          # For Ollama local model setup
           OPENAI_BASE_URL=http://host.docker.internal:11434/v1
 
-          # Logging configuration
           LOG_LEVEL=INFO
           ENVIRONMENT=production
           DEBUG=false
 
-          # Database configuration
           DATABASE_URL=sqlite:///./data/autoclip.db
-
-          # Redis configuration
           REDIS_URL=redis://redis:6379/0
 
-          # File storage
           UPLOAD_DIR=./data/uploads
           PROJECT_DIR=./data/projects
           EOF
 
-          echo "✅ Environment configuration created"
-          echo ""
-          echo "Current .env content (sanitized):"
-          grep -v "API_KEY\|PASSWORD" .env | head -20
+          echo "✅ Environment configuration successfully generated."
 
       # ============================================================
-      # 5. INSTALL & VERIFY DOCKER
-      # ============================================================
-
-      - name: Verify Docker Installation
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "DOCKER VERIFICATION"
-          echo "======================================================"
-
-          docker --version
-          docker compose version
-
-          echo ""
-          echo "Docker info:"
-          docker info
-
-      # ============================================================
-      # 6. VALIDATE DOCKER COMPOSE FILE
-      # ============================================================
-
-      - name: Validate Docker Compose Configuration
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "DOCKER COMPOSE VALIDATION"
-          echo "======================================================"
-
-          echo ""
-          echo "Validating compose file structure..."
-          docker compose config > /tmp/autoclip-compose-resolved.yml
-
-          echo ""
-          echo "Services found:"
-          docker compose config --services
-
-          echo ""
-          echo "Checking service configurations..."
-
-          python3 - <<'PY'
-          import yaml
-          import sys
-
-          with open("/tmp/autoclip-compose-resolved.yml", "r") as f:
-              data = yaml.safe_load(f)
-
-          services = data.get("services", {})
-
-          if not services:
-              print("❌ No services found in docker-compose.yml")
-              sys.exit(1)
-
-          print("✅ Services configured:")
-          for name, service in services.items():
-              image = service.get("image", "N/A")
-              build = service.get("build", "N/A")
-              ports = service.get("ports", [])
-              print(f"  - {name}: image={image}, ports={ports}")
-
-          PY
-
-      # ============================================================
-      # 7. PREPARE DATA DIRECTORIES
+      # 5. PREPARE DATA DIRECTORIES
       # ============================================================
 
       - name: Prepare Data Directories
@@ -231,76 +109,35 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "PREPARING DATA DIRECTORIES"
-          echo "======================================================"
-
           mkdir -p data logs uploads
-
-          echo "✅ Created directories:"
-          echo "   - data/   (database, projects)"
-          echo "   - logs/   (application logs)"
-          echo "   - uploads/ (temporary files)"
-
-          ls -lh | grep -E "data|logs|uploads"
+          chmod -R 777 data logs uploads
+          echo "✅ Prepared local storage directories."
 
       # ============================================================
-      # 8. PULL EXTERNAL DOCKER IMAGES
+      # 6. PULL & BUILD DOCKER IMAGES
       # ============================================================
 
-      - name: Pull External Docker Images
+      - name: Pull Base Docker Images
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "======================================================"
-          echo "PULLING EXTERNAL DOCKER IMAGES"
-          echo "======================================================"
-
-          # Ignore pull failures for local services missing on remote registry
+          # Pull public base images without failing on locally-built images
           docker compose pull --ignore-pull-failures || true
 
-          echo ""
-          echo "✅ External Docker images pulled successfully"
-
-      # ============================================================
-      # 9. BUILD LOCAL DOCKER IMAGES
-      # ============================================================
-
-      - name: Build Docker Images from Source
+      - name: Build Local Docker Images
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo "======================================================"
-          echo "BUILDING LOCAL DOCKER IMAGES"
+          echo "BUILDING LOCAL DOCKER IMAGES FROM SOURCE"
           echo "======================================================"
 
           docker compose build --no-cache
 
-          echo ""
-          echo "✅ Local Docker images built successfully"
-
       # ============================================================
-      # 10. FIX PERMISSIONS FOR AUTOCLIP USER
-      # ============================================================
-
-      - name: Fix Directory Permissions
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "FIXING DIRECTORY PERMISSIONS"
-          echo "======================================================"
-
-          docker compose run --rm --no-deps --user root --entrypoint sh autoclip \
-            -c 'chown -R autoclip:autoclip /app/data /app/logs /app/uploads && chmod -R 755 /app/data /app/logs /app/uploads' || true
-
-          echo "✅ Permissions step processed"
-
-      # ============================================================
-      # 11. START AUTOCLIP SERVICES
+      # 7. START AUTOCLIP SERVICES
       # ============================================================
 
       - name: Start AutoClip Services
@@ -314,201 +151,126 @@ jobs:
 
           docker compose up -d
 
-          echo ""
-          echo "Waiting for services to be ready..."
-          sleep 15
-
-          echo ""
-          echo "Service startup initiated."
+          echo "Waiting 20s for container initializations..."
+          sleep 20
 
       # ============================================================
-      # 12. VERIFY CONTAINER STATUS
+      # 8. VERIFY SERVICES & UI HEALTH CHECK
       # ============================================================
 
-      - name: Check Container Status
+      - name: Wait for Services and UI Ready
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo "======================================================"
-          echo "CONTAINER STATUS"
+          echo "WAITING FOR BACKEND API & WEB UI"
           echo "======================================================"
 
-          docker compose ps
-
-          echo ""
-          echo "Docker network:"
-          docker network ls | grep -E "NAME|autoclip" || true
-
-      # ============================================================
-      # 13. VERIFY SERVICE CONNECTIVITY
-      # ============================================================
-
-      - name: Verify Service Ports
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "PORT VERIFICATION"
-          echo "======================================================"
-
-          echo ""
-          echo "--- Listening Ports ---"
-          sudo ss -lntp || netstat -lntp || true
-
-          echo ""
-          echo "--- Web UI (Port 3000) ---"
-          curl -I http://127.0.0.1:3000 || echo "⚠ UI not ready yet"
-
-          echo ""
-          echo "--- Backend API (Port 8000) ---"
-          curl -I http://127.0.0.1:8000 || echo "⚠ API not ready yet"
-
-          echo ""
-          echo "--- Health Check ---"
-          curl -f http://127.0.0.1:8000/api/v1/health/ || echo "⚠ Health check not available yet"
-
-      # ============================================================
-      # 14. VERIFY REDIS CONNECTION
-      # ============================================================
-
-      - name: Verify Redis Connection
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "REDIS VERIFICATION"
-          echo "======================================================"
-
-          docker compose exec -T redis redis-cli ping || echo "⚠ Redis not responding yet"
-
-          echo ""
-          echo "Redis status verified"
-
-      # ============================================================
-      # 15. VERIFY DATABASE INITIALIZATION
-      # ============================================================
-
-      - name: Verify Database
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "DATABASE VERIFICATION"
-          echo "======================================================"
-
-          if [[ -f "data/autoclip.db" ]]; then
-              echo "✅ SQLite database found"
-              ls -lh data/autoclip.db
-          else
-              echo "⚠ Database will be initialized on first run"
-          fi
-
-      # ============================================================
-      # 16. VERIFY LLM PROVIDER CONFIGURATION
-      # ============================================================
-
-      - name: Verify LLM Configuration
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "LLM PROVIDER CONFIGURATION"
-          echo "======================================================"
-
-          echo ""
-          echo "Current LLM Configuration:"
-          grep -E "LLM_PROVIDER|API_MODEL_NAME|OPENAI_BASE_URL" .env || echo "⚠ No LLM configuration found"
-
-      # ============================================================
-      # 17. WAIT FOR SERVICES TO BE FULLY READY
-      # ============================================================
-
-      - name: Wait for Services Ready
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "WAITING FOR SERVICES"
-          echo "======================================================"
-
-          echo "Waiting for backend API to be ready..."
-          for i in {1..60}; do
-            if curl -sf http://127.0.0.1:8000/api/v1/health/ > /dev/null 2>&1; then
-              echo "✅ Backend API is ready!"
+          echo "1. Checking Backend API (Port 8000)..."
+          for i in {1..40}; do
+            if curl -sf http://127.0.0.1:8000/api/v1/health/ > /dev/null 2>&1 || curl -sf http://127.0.0.1:8000/ > /dev/null 2>&1; then
+              echo "✅ Backend API is live!"
               break
             fi
-            echo "⏳ Attempt $i/60 - waiting for API..."
+            echo "⏳ Attempt $i/40 - Waiting for Backend API..."
             sleep 3
           done
 
           echo ""
-          echo "Waiting for web UI to be ready..."
-          for i in {1..30}; do
-            if curl -sf http://127.0.0.1:3000 > /dev/null 2>&1; then
-              echo "✅ Web UI is ready!"
+          echo "2. Checking Web UI (Port 3000)..."
+          # Extended attempt loop (up to 60 tries / 3 mins) with connect timeouts for slow frontend boots
+          for i in {1..60}; do
+            if curl -sL --connect-timeout 2 --max-time 5 http://127.0.0.1:3000 > /dev/null 2>&1; then
+              echo "✅ Web UI is live!"
               break
             fi
-            echo "⏳ Attempt $i/30 - waiting for UI..."
-            sleep 2
+            echo "⏳ Attempt $i/60 - Waiting for Web UI startup..."
+            sleep 3
           done
 
       # ============================================================
-      # 18. DISPLAY ACCESS INFORMATION
+      # 9. INSTALL CLOUDFLARE TUNNEL (CLOUDFLARED)
       # ============================================================
 
-      - name: Display Access Information
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo ""
-          echo "======================================================"
-          echo "          AUTOCLIP ACCESS INFORMATION"
-          echo "======================================================"
-          echo ""
-          echo "🌐 Web Interface:  http://localhost:3000"
-          echo "📚 API Docs:       http://localhost:8000/docs"
-          echo "🔍 ReDoc:          http://localhost:8000/redoc"
-          echo "💼 Health Check:   http://localhost:8000/api/v1/health/"
-          echo "🌼 Task Monitor:   http://localhost:5555 (Flower)"
-          echo ""
-
-      # ============================================================
-      # 19. KEEP SERVICES RUNNING
-      # ============================================================
-
-      - name: Keep AutoClip Running
+      - name: Install Cloudflare Tunnel
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo "======================================================"
-          echo "AUTOCLIP RUNTIME - MONITORING SERVICES"
+          echo "INSTALLING CLOUDFLARE TUNNEL"
+          echo "======================================================"
+
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared --version
+
+      # ============================================================
+      # 10. START CLOUDFLARE TUNNELS & EXPOSE PUBLIC URLS
+      # ============================================================
+
+      - name: Expose Services via Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "STARTING CLOUDFLARE TUNNELS"
+          echo "======================================================"
+
+          # Launch tunnel for Web UI (3000)
+          cloudflared tunnel --url http://localhost:3000 > ui_tunnel.log 2>&1 &
+          
+          # Launch tunnel for Backend API (8000)
+          cloudflared tunnel --url http://localhost:8000 > api_tunnel.log 2>&1 &
+
+          echo "Waiting for Cloudflare Public URLs to generate..."
+          sleep 12
+
+          echo ""
+          echo "======================================================"
+          echo "           🌐 CLOUDFLARE PUBLIC ACCESS URLS           "
+          echo "======================================================"
+
+          UI_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' ui_tunnel.log | head -n 1 || echo "Tunnel pending")
+          API_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' api_tunnel.log | head -n 1 || echo "Tunnel pending")
+
+          echo ""
+          echo "🚀 Web Interface URL:  $UI_URL"
+          echo "🔗 Backend API URL:    $API_URL"
+          echo "📚 API Docs:           $API_URL/docs"
+          echo ""
+          echo "======================================================"
+
+      # ============================================================
+      # 11. KEEP RUNNING & MONITOR SERVICES
+      # ============================================================
+
+      - name: Keep Runner Active & Stream Tunnel Logs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "======================================================"
+          echo "AUTOCLIP RUNNING - MONITORING TUNNEL & CONTAINERS"
           echo "======================================================"
 
           while true; do
             echo ""
-            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Service Status:"
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Health Status:"
             docker compose ps
-
-            unhealthy=$(docker compose ps | grep -i "unhealthy\|exited" || echo "")
-            if [[ ! -z "$unhealthy" ]]; then
-              echo ""
-              echo "⚠️  Warning: Unhealthy containers detected!"
-              docker compose logs --tail=50
+            
+            UI_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' ui_tunnel.log | head -n 1 || echo "")
+            if [[ -n "$UI_URL" ]]; then
+              echo "Public UI Active at: $UI_URL"
             fi
 
             sleep 300
           done
 
       # ============================================================
-      # 20. FAILURE DIAGNOSTICS
+      # 12. FAILURE DIAGNOSTICS
       # ============================================================
 
       - name: Failure Diagnostics
@@ -517,26 +279,22 @@ jobs:
         run: |
           set +e
 
-          echo ""
-          echo "======================================================"
-          echo "        AUTOCLIP FAILURE DIAGNOSTICS"
-          echo "======================================================"
+          echo "========== CONTAINER LOGS =========="
+          docker compose logs --tail=100 2>&1 || true
 
-          docker ps -a 2>&1 || true
-          docker compose ps -a 2>&1 || true
-          docker compose logs --tail=200 2>&1 || true
+          echo "========== CLOUDFLARE UI TUNNEL LOGS =========="
+          cat ui_tunnel.log 2>&1 || true
+
+          echo "========== CLOUDFLARE API TUNNEL LOGS =========="
+          cat api_tunnel.log 2>&1 || true
 
       # ============================================================
-      # 21. CLEANUP
+      # 13. CLEANUP
       # ============================================================
 
       - name: Cleanup
         if: always()
         shell: bash
         run: |
-          echo "======================================================"
-          echo "CLEANUP"
-          echo "======================================================"
-
+          pkill cloudflared || true
           docker compose down 2>&1 || true
-          echo "✅ Cleanup completed."
