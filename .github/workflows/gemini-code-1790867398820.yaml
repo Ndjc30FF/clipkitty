@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   autoclip:
-    name: Run AutoClip & Tmate Port Forwarding
+    name: Run AutoClip & SSH Port Forwarding
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -107,26 +107,12 @@ jobs:
           if [[ "$SUCCESS" == "true" ]]; then
             echo "✅ AutoClip backend verified healthy on port 8000!"
           else
-            echo "⚠️ Health check didn't pass within $TIMEOUT seconds. Starting Tmate anyway so you can debug live."
+            echo "⚠️ Health check didn't pass within $TIMEOUT seconds. Starting SSH session anyway."
             docker compose logs --tail=50
           fi
 
-      - name: Display Port Forwarding Banner
-        if: always()
-        shell: bash
-        run: |
-          echo "========================================================================"
-          echo "🌐 CONNECT TO YOUR AUTOCLIP APP FROM YOUR LAPTOP"
-          echo "========================================================================"
-          echo "1. Expand the 'Setup Tmate SSH Session' step below."
-          echo "2. Find the line starting with 'SSH:'."
-          echo "3. Copy the SSH command and add '-L 8000:localhost:8000' right after 'ssh'."
-          echo "4. Example syntax:"
-          echo "   ssh -L 8000:localhost:8000 <user>@<host>.tmate.io -p <port>"
-          echo "========================================================================"
-
-      - name: Setup Tmate SSH Session
-        uses: mxschmitt/action-tmate@v3
+      - name: Setup Upterm SSH Session
+        uses: lhotari/action-upterm@v1
         if: always()
         with:
           limit-access-to-actor: false
