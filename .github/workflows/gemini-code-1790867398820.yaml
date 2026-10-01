@@ -89,13 +89,16 @@ jobs:
           docker compose pull --ignore-pull-failures || true
           docker compose up -d --build
 
-      - name: Verify Web UI and Backend Health
+      - name: Automated Diagnostics & Health Verification
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "Polling AutoClip container response on http://127.0.0.1:8000..."
 
-          TIMEOUT=90
+          echo "================ DOCKER CONTAINER LIST ================"
+          docker compose ps
+
+          echo "================ TESTING LOCAL PORT RESPONSES ================"
+          TIMEOUT=60
           ELAPSED=0
           SUCCESS=false
 
@@ -110,11 +113,15 @@ jobs:
           done
 
           if [[ "$SUCCESS" == "false" ]]; then
-            echo "❌ Health check failed within ${TIMEOUT} seconds."
+            echo "❌ Health check failed. Printing recent container logs:"
+            docker compose logs --tail=100
             exit 1
           fi
 
-          echo "✅ AutoClip backend and web UI verified healthy on port 8000!"
+          echo "================ PORT 8000 HTTP RESPONSE HEADER ================"
+          curl -i -s http://127.0.0.1:8000/ | head -n 25 || true
+
+          echo "✅ AutoClip backend verified healthy on port 8000!"
 
       - name: Install Cloudflare CLI
         shell: bash
@@ -131,26 +138,35 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN}" ]]; then
+          if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
             echo "Launching Cloudflare Managed Tunnel via Token..."
             cloudflared tunnel --no-autoupdate run --token "${CLOUDFLARE_TUNNEL_TOKEN}" > cloudflared.log 2>&1 &
             echo "✅ Named tunnel initiated in background."
           else
             echo "No CLOUDFLARE_TUNNEL_TOKEN set. Launching ephemeral trycloudflare tunnel..."
-            cloudflared tunnel --url http://127.0.0.1:8000 --http-host-header="localhost" > cloudflared.log 2>&1 &
+            cloudflared tunnel --url http://127.0.0.1:8000 --http-host-header="localhost" --protocol http2 --logfile cloudflared.log &
 
             echo "Awaiting Cloudflare URL assignment..."
-            for i in {1..20}; do
-              TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflared.log | head -n 1 || true)
-              if [[ -n "$TUNNEL_URL" ]]; then
-                echo "======================================================"
-                echo "🚀 AUTOCLIP PUBLIC WEB INTERFACE AVAILABLE AT:"
-                echo "👉 $TUNNEL_URL"
-                echo "======================================================"
-                break
+            TUNNEL_URL=""
+            for i in {1..30}; do
+              if [[ -f cloudflared.log ]]; then
+                TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflared.log | head -n 1 || true)
+                if [[ -n "$TUNNEL_URL" ]]; then
+                  echo "======================================================"
+                  echo "🚀 AUTOCLIP PUBLIC WEB INTERFACE AVAILABLE AT:"
+                  echo "👉 $TUNNEL_URL"
+                  echo "======================================================"
+                  break
+                fi
               fi
               sleep 2
             done
+
+            if [[ -z "$TUNNEL_URL" ]]; then
+              echo "❌ Cloudflare tunnel failed to assign a public URL. Printing cloudflared.log:"
+              cat cloudflared.log
+              exit 1
+            fi
           fi
 
       - name: Monitor Application Lifecycle
@@ -167,13 +183,11 @@ jobs:
           echo "Starting continuous health monitoring for ${HOURS} hour(s) (${MAX_SECONDS} seconds)..."
 
           while [[ $ELAPSED -lt $MAX_SECONDS ]]; do
-            # Verify Docker containers are active
             if ! docker compose ps | grep -q "Up"; then
               echo "❌ ERROR: One or more Docker services stopped unexpectedly!"
               exit 1
             fi
 
-            # Verify Cloudflare daemon is running
             if ! pgrep -x "cloudflared" > /dev/null; then
               echo "❌ ERROR: Cloudflare tunnel process exited!"
               exit 1
@@ -187,7 +201,7 @@ jobs:
             fi
           done
 
-          echo "✅ Scheduled operational window completed successfully."
+          echo "✅ Operational window completed successfully."
 
       - name: Failure Diagnostics
         if: failure()
@@ -199,15 +213,12 @@ jobs:
           echo "================ DOCKER CONTAINER LOGS ================"
           docker compose logs --tail=200
           echo "================ CLOUDFLARE TUNNEL LOGS ================"
-          cat cloudflared.log
-          echo "================ SYSTEM STORAGE ================"
-          df -h
+          cat cloudflared.log 2>&1 || true
 
       - name: Clean Up Infrastructure
         if: always()
         shell: bash
         run: |
           set +e
-          echo "Shutting down background processes and Docker containers..."
           pkill -f cloudflared || true
           docker compose down --volumes --remove-orphans || true
