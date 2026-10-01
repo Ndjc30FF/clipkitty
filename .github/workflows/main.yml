@@ -307,17 +307,17 @@ jobs:
           echo "=========================================="
           
           cat > docker-compose.override.yml <<'EOF'
-version: '3.8'
-services:
-  ui:
-    ports:
-      - "0.0.0.0:5173:5173"
-    environment:
-      - VITE_BACKEND_URL=http://localhost:8765
-  backend:
-    ports:
-      - "0.0.0.0:8765:8765"
-EOF
+          version: '3.8'
+          services:
+            ui:
+              ports:
+                - "0.0.0.0:5173:5173"
+              environment:
+                - VITE_BACKEND_URL=http://localhost:8765
+            backend:
+              ports:
+                - "0.0.0.0:8765:8765"
+          EOF
           
           echo "✅ Override file created"
           echo ""
