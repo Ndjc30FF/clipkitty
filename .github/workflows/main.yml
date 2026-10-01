@@ -74,6 +74,7 @@ jobs:
           
           echo ""
           echo "✅ All repository validations passed"
+
       # ============================================================
       # 3. INSTALL DEPENDENCIES
       # ============================================================
@@ -464,7 +465,7 @@ jobs:
           if docker compose -f docker-compose.yml -f docker-compose.override.yml ps --format "{{.Ports}}" | grep -q "0.0.0.0"; then
             echo "✅ Found 0.0.0.0 port bindings"
           else
-            echo "⚠️  WARNING: No 0.0.0.0 port bindings detected"
+            echo "⚠️️  WARNING: No 0.0.0.0 port bindings detected"
             docker compose -f docker-compose.yml -f docker-compose.override.yml ps -a || true
           fi
 
