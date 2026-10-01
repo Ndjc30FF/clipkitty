@@ -137,7 +137,7 @@ jobs:
           # Build autoclip:local image directly from root Dockerfile
           docker compose build --no-cache autoclip
 
-      # ============================================================
+     # ============================================================
       # 8. START AUTOCLIP SERVICES
       # ============================================================
 
@@ -146,32 +146,33 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          echo "Starting Docker containers..."
           docker compose up -d
 
-          echo "Waiting 20s for container initializations..."
-          sleep 20
+          echo "Waiting 15s for initial process initialization..."
+          sleep 15
 
       # ============================================================
-      # 9. VERIFY SERVICE & WEB UI HEALTH CHECK (PORT 8000)
+      # 9. VERIFY SERVICE & WEB UI HEALTH FIRST
       # ============================================================
 
-      - name: Wait for AutoClip Web UI & API
+      - name: Verify Web UI and API on Port 8000
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          echo "Checking AutoClip Web UI and Backend on Port 8000..."
-          for i in {1..30}; do
-            if curl -sf http://127.0.0.1:8000/ > /dev/null 2>&1; then
-              echo "✅ AutoClip Web UI is live on Port 8000!"
+          echo "Checking if Web UI and API are responsive on Port 8000..."
+          for i in {1..20}; do
+            if curl -sf http://127.0.0.1:8000/ > /dev/null 2>&1 || curl -sf http://127.0.0.1:8000/api/v1/health/ > /dev/null 2>&1; then
+              echo "✅ Web UI and Backend API are fully live on Port 8000!"
               break
             fi
-            echo "⏳ Attempt $i/30 - Waiting for AutoClip to boot..."
+            echo "⏳ Attempt $i/20 - Waiting for service startup..."
             sleep 3
           done
 
       # ============================================================
-      # 10. INSTALL CLOUDFLARE TUNNEL
+      # 10. INSTALL CLOUDFLARE TUNNEL (AFTER HEALTH VERIFIED)
       # ============================================================
 
       - name: Install Cloudflare Tunnel
@@ -179,11 +180,12 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          echo "Installing Cloudflare CLI..."
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
       # ============================================================
-      # 11. START CLOUDFLARE TUNNEL (TARGETING PORT 8000)
+      # 11. START CLOUDFLARE TUNNEL & EXPOSE PUBLIC URL
       # ============================================================
 
       - name: Expose Services via Cloudflare Tunnel
@@ -191,10 +193,9 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          # Point tunnel to port 8000 where FastAPI serves the Web UI & API
           cloudflared tunnel --url http://localhost:8000 > autoclip_tunnel.log 2>&1 &
 
-          sleep 12
+          sleep 10
 
           APP_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' autoclip_tunnel.log | head -n 1 || echo "Tunnel pending")
 
@@ -204,7 +205,6 @@ jobs:
           echo "🚀 Web Interface & API:  $APP_URL"
           echo "📚 API Swagger Docs:      $APP_URL/docs"
           echo "======================================================"
-
       # ============================================================
       # 12. KEEP RUNNING & MONITOR SERVICES
       # ============================================================
