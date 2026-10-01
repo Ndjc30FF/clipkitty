@@ -566,6 +566,12 @@ jobs:
           echo "STARTING NGROK TUNNELS"
           echo "======================================================"
 
+          # Check token
+          if [ -z "${NGROK_AUTHTOKEN:-}" ]; then
+            echo "❌ NGROK_AUTHTOKEN secret is missing! Please set it in repository secrets."
+            exit 1
+          fi
+
           # Install ngrok
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
@@ -574,14 +580,10 @@ jobs:
           # Add authtoken
           ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
-          # Start UI Tunnel
-          ngrok http 5173 --host-header=rewrite > /tmp/ngrok-ui.log 2>&1 &
-          
-          # Start Engine Tunnel
-          ngrok http 8765 --host-header=rewrite > /tmp/ngrok-engine.log 2>&1 &
-
-          # Start Ollama Tunnel
-          ngrok http 11434 --host-header=rewrite > /tmp/ngrok-ollama.log 2>&1 &
+          # Start Named Tunnels via background jobs
+          ngrok http 5173 --name ui --host-header=rewrite > /tmp/ngrok-ui.log 2>&1 &
+          ngrok http 8765 --name engine --host-header=rewrite > /tmp/ngrok-engine.log 2>&1 &
+          ngrok http 11434 --name ollama --host-header=rewrite > /tmp/ngrok-ollama.log 2>&1 &
 
           echo "Waiting for ngrok URLs..."
           sleep 5
@@ -595,29 +597,38 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          # Extract public URLs from ngrok local API
+          echo "======================================================"
+          echo "          CLIPS STUDIO PUBLIC TUNNEL LINKS"
+          echo "======================================================"
+
           python3 - <<'PY'
           import json, urllib.request, time
 
-          for _ in range(15):
+          for i in range(15):
               try:
                   with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels") as response:
                       data = json.loads(response.read().decode())
                       tunnels = data.get("tunnels", [])
-                      if len(tunnels) >= 3:
-                          print("")
-                          print("======================================================")
-                          print("          CLIPS STUDIO PUBLIC TUNNEL LINKS")
-                          print("======================================================")
+                      if len(tunnels) >= 1:
                           for t in tunnels:
-                              print(f"{t['name']}: {t['public_url']}")
-                          print("======================================================")
-                          print("")
+                              print(f"{t['name'].upper()} URL: {t['public_url']}")
                           break
-              except Exception:
+              except Exception as e:
                   pass
               time.sleep(2)
+          else:
+              print("❌ Could not retrieve ngrok tunnel URLs.")
+              print("Log contents:")
+              for path in ["ui", "engine", "ollama"]:
+                  try:
+                      with open(f"/tmp/ngrok-{path}.log") as f:
+                          print(f"--- /tmp/ngrok-{path}.log ---")
+                          print(f.read())
+                  except Exception:
+                      pass
           PY
+
+          echo "======================================================"
 
       # ============================================================
       # 17. KEEP RUNNING
