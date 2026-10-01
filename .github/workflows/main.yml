@@ -137,11 +137,6 @@ jobs:
 
       # ============================================================
       # 5. VALIDATE THE REPOSITORY'S ORIGINAL COMPOSE FILE
-      #
-      # IMPORTANT:
-      # Do NOT create a custom compose override.
-      # Do NOT create backend.
-      # Do NOT rename engine -> backend.
       # ============================================================
 
       - name: Validate Original Docker Compose
@@ -213,8 +208,6 @@ jobs:
 
       # ============================================================
       # 6. PULL PREBUILT IMAGES
-      #
-      # The repository explicitly provides a prebuilt engine image.
       # ============================================================
 
       - name: Pull Docker Images
@@ -304,9 +297,6 @@ jobs:
 
       # ============================================================
       # 10. PULL GEMMA 7B
-      #
-      # IMPORTANT:
-      # Use the repository's actual model tag.
       # ============================================================
 
       - name: Install Gemma 7B In Ollama
@@ -483,113 +473,30 @@ jobs:
           done
 
       # ============================================================
-      # 15. VERIFY PORTS
+      # 15. START CLOUDFLARE TUNNELS
       # ============================================================
 
-      - name: Verify Local Ports
+      - name: Start Cloudflare Tunnels
         shell: bash
         run: |
           set -Eeuo pipefail
 
           echo "======================================================"
-          echo "PORT VERIFICATION"
+          echo "STARTING CLOUDFLARE TUNNELS"
           echo "======================================================"
 
-          echo ""
-          echo "--- Docker Compose Ports ---"
-          docker compose ps
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
 
-          echo ""
-          echo "--- Listening TCP Ports ---"
-          sudo ss -lntp || true
+          cloudflared tunnel --url http://127.0.0.1:5173 --http-host-header 127.0.0.1:5173 > /tmp/ui.log 2>&1 &
+          cloudflared tunnel --url http://127.0.0.1:8765 --http-host-header 127.0.0.1:8765 > /tmp/engine.log 2>&1 &
+          cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header 127.0.0.1:11434 > /tmp/ollama.log 2>&1 &
 
-          echo ""
-          echo "--- UI ---"
-          curl -I http://127.0.0.1:5173 || true
-
-          echo ""
-          echo "--- ENGINE ---"
-          curl -I http://127.0.0.1:8765 || true
-
-          echo ""
-          echo "--- OLLAMA ---"
-          curl -fsS http://127.0.0.1:11434/api/tags || true
+          echo "Waiting for Cloudflare Tunnel URLs..."
+          sleep 10
 
       # ============================================================
-      # 16. CHECK ENGINE -> OLLAMA NETWORK
-      # ============================================================
-
-      - name: Verify Engine To Ollama Connectivity
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "ENGINE -> OLLAMA NETWORK TEST"
-          echo "======================================================"
-
-          docker compose exec -T engine \
-            python - <<'PY'
-          import os
-          import urllib.request
-
-          urls = [
-              os.environ.get(
-                  "CLIPS_STUDIO_OLLAMA_HOST",
-                  "http://ollama:11434"
-              ) + "/api/tags"
-          ]
-
-          for url in urls:
-              print("Testing:", url)
-              with urllib.request.urlopen(url, timeout=15) as response:
-                  body = response.read().decode("utf-8")
-                  print("HTTP:", response.status)
-                  print(body[:2000])
-          PY
-
-          echo ""
-          echo "✅ Engine can reach Ollama."
-
-      # ============================================================
-      # START NGROK TUNNELS FOR ALL SERVICES
-      # ============================================================
-
-      - name: Install and Start ngrok
-        shell: bash
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-        run: |
-          set -Eeuo pipefail
-
-          echo "======================================================"
-          echo "STARTING NGROK TUNNELS"
-          echo "======================================================"
-
-          # Check token
-          if [ -z "${NGROK_AUTHTOKEN:-}" ]; then
-            echo "❌ NGROK_AUTHTOKEN secret is missing! Please set it in repository secrets."
-            exit 1
-          fi
-
-          # Install ngrok
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update && sudo apt install ngrok -y
-
-          # Add authtoken
-          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
-
-          # Start Named Tunnels via background jobs
-          ngrok http 5173 --name ui --host-header=rewrite > /tmp/ngrok-ui.log 2>&1 &
-          ngrok http 8765 --name engine --host-header=rewrite > /tmp/ngrok-engine.log 2>&1 &
-          ngrok http 11434 --name ollama --host-header=rewrite > /tmp/ngrok-ollama.log 2>&1 &
-
-          echo "Waiting for ngrok URLs..."
-          sleep 5
-
-      # ============================================================
-      # DISPLAY PUBLIC ACCESS LINKS
+      # 16. DISPLAY PUBLIC ACCESS LINKS
       # ============================================================
 
       - name: Display Final Status
@@ -600,34 +507,9 @@ jobs:
           echo "======================================================"
           echo "          CLIPS STUDIO PUBLIC TUNNEL LINKS"
           echo "======================================================"
-
-          python3 - <<'PY'
-          import json, urllib.request, time
-
-          for i in range(15):
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels") as response:
-                      data = json.loads(response.read().decode())
-                      tunnels = data.get("tunnels", [])
-                      if len(tunnels) >= 1:
-                          for t in tunnels:
-                              print(f"{t['name'].upper()} URL: {t['public_url']}")
-                          break
-              except Exception as e:
-                  pass
-              time.sleep(2)
-          else:
-              print("❌ Could not retrieve ngrok tunnel URLs.")
-              print("Log contents:")
-              for path in ["ui", "engine", "ollama"]:
-                  try:
-                      with open(f"/tmp/ngrok-{path}.log") as f:
-                          print(f"--- /tmp/ngrok-{path}.log ---")
-                          print(f.read())
-                  except Exception:
-                      pass
-          PY
-
+          echo -n "UI URL:     " && (grep -o 'https://.*\.trycloudflare\.com' /tmp/ui.log | head -n 1 || echo "Pending...")
+          echo -n "ENGINE URL: " && (grep -o 'https://.*\.trycloudflare\.com' /tmp/engine.log | head -n 1 || echo "Pending...")
+          echo -n "OLLAMA URL: " && (grep -o 'https://.*\.trycloudflare\.com' /tmp/ollama.log | head -n 1 || echo "Pending...")
           echo "======================================================"
 
       # ============================================================
@@ -658,101 +540,11 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo ""
           echo "======================================================"
           echo "        CLIPS STUDIO FAILURE DIAGNOSTICS"
           echo "======================================================"
-
-          echo ""
-          echo "========== GIT =========="
-          git rev-parse HEAD 2>&1 || true
-          git status 2>&1 || true
-
-          echo ""
-          echo "========== FILES =========="
-          ls -la 2>&1 || true
-
-          echo ""
-          echo "========== DOCKER VERSION =========="
-          docker --version 2>&1 || true
-          docker compose version 2>&1 || true
-
-          echo ""
-          echo "========== DOCKER PS =========="
-          docker ps -a 2>&1 || true
-
-          echo ""
-          echo "========== COMPOSE SERVICES =========="
-          docker compose config --services 2>&1 || true
-
-          echo ""
-          echo "========== COMPOSE CONFIG =========="
-          docker compose config 2>&1 || true
-
-          echo ""
-          echo "========== COMPOSE PS =========="
           docker compose ps -a 2>&1 || true
-
-          echo ""
-          echo "========== ENGINE LOGS =========="
-          docker compose logs --tail=300 engine 2>&1 || true
-
-          echo ""
-          echo "========== UI LOGS =========="
-          docker compose logs --tail=300 ui 2>&1 || true
-
-          echo ""
-          echo "========== OLLAMA LOGS =========="
-          docker compose logs --tail=300 ollama 2>&1 || true
-
-          echo ""
-          echo "========== OLLAMA MODELS =========="
-          docker compose exec -T ollama ollama list 2>&1 || true
-
-          echo ""
-          echo "========== ENGINE HEALTH =========="
-          curl -v \
-            --connect-timeout 5 \
-            --max-time 10 \
-            http://127.0.0.1:8765/health \
-            2>&1 || true
-
-          echo ""
-          echo "========== UI =========="
-          curl -v \
-            --connect-timeout 5 \
-            --max-time 10 \
-            http://127.0.0.1:5173 \
-            2>&1 || true
-
-          echo ""
-          echo "========== OLLAMA =========="
-          curl -v \
-            --connect-timeout 5 \
-            --max-time 10 \
-            http://127.0.0.1:11434/api/tags \
-            2>&1 || true
-
-          echo ""
-          echo "========== PORTS =========="
-          sudo ss -lntp 2>&1 || true
-
-          echo ""
-          echo "========== MEMORY =========="
-          free -h 2>&1 || true
-
-          echo ""
-          echo "========== DISK =========="
-          df -h 2>&1 || true
-
-          echo ""
-          echo "========== DOCKER VOLUMES =========="
-          docker volume ls 2>&1 || true
-
-          echo ""
-          echo "======================================================"
-          echo "END OF FAILURE DIAGNOSTICS"
-          echo "======================================================"
+          docker compose logs --tail=300 2>&1 || true
 
       # ============================================================
       # 19. CLEANUP
@@ -762,10 +554,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "======================================================"
-          echo "CLEANUP"
-          echo "======================================================"
-
           docker compose down 2>&1 || true
-
-          echo "Docker containers stopped."
