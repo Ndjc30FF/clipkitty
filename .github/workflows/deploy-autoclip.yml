@@ -44,7 +44,7 @@ jobs:
         working-directory: autoclip
         run: |
           echo "Starting application with Docker Compose..."
-          docker compose up -d
+          docker compose up -d --build
 
       - name: Wait for autoclip service to be ready
         working-directory: autoclip
