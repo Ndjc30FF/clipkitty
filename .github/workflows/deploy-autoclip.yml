@@ -27,6 +27,18 @@ jobs:
           cp env.example .env
           mkdir -p data logs uploads
 
+      - name: Create docker-compose override for autoclip service
+        working-directory: autoclip
+        run: |
+          echo "Creating docker-compose override to fix missing command..."
+          cat > docker-compose.override.yml << 'EOF'
+services:
+  autoclip:
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+EOF
+          echo "Override file created:"
+          cat docker-compose.override.yml
+
       - name: Verify Docker and Docker Compose
         working-directory: autoclip
         run: |
@@ -136,4 +148,3 @@ jobs:
             kill $(cat tunnel.pid) || true
             rm -f tunnel.pid
           fi
-
