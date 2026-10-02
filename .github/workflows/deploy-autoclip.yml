@@ -51,7 +51,7 @@ jobs:
         run: |
           echo "Waiting for autoclip service to be ready..."
           for i in {1..30}; do
-            if docker compose exec -T autoclip curl -s -f http://localhost:8000/api/v1/health/ > /dev/null 2>&1; then
+            if docker compose exec -T autoclip curl -s -f http://localhost:3000/api/v1/health/ > /dev/null 2>&1; then
               echo "Autoclip service is ready!"
               break
             fi
@@ -60,7 +60,7 @@ jobs:
           done
 
           # If the loop ended without breaking, then the service is not ready.
-          if ! docker compose exec -T autoclip curl -s -f http://localhost:8000/api/v1/health/ > /dev/null 2>&1; then
+          if ! docker compose exec -T autoclip curl -s -f http://localhost:3000/api/v1/health/ > /dev/null 2>&1; then
             echo "Autoclip service failed to become ready."
             exit 1
           fi
@@ -116,12 +116,14 @@ jobs:
           SECONDS=$((HOURS * 3600))
           echo "Keeping application running for ${HOURS} hour(s)..."
 
-          # Simple heartbeat to show the job is still running
-          for i in $(seq 1 $SECONDS); do
-            if [ $((i % 60)) -eq 0 ]; then
-              echo "⏱️  Application running... [$((i/60)) minutes elapsed]"
-            fi
-            sleep 1
+          # Print heartbeat every 5 minutes
+          INTERVAL=300  # 5 minutes in seconds
+          ELAPSED=0
+          while [ $ELAPSED -lt $SECONDS ]; do
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+            MINUTES_ELAPSED=$((ELAPSED / 60))
+            echo "⏱️  Application running... [${MINUTES_ELAPSED} minutes elapsed]"
           done
 
       - name: Cleanup
@@ -135,20 +137,3 @@ jobs:
             rm -f tunnel.pid
           fi
 
-      - name: Failure diagnostics
-        if: failure()
-        working-directory: autoclip
-        run: |
-          echo "=== Failure Diagnostics ==="
-          echo "Container status:"
-          docker compose ps -a
-          echo ""
-          echo "Container logs:"
-          docker compose logs --tail=100
-          echo ""
-          echo "Tunnel log (if exists):"
-          if [ -f tunnel.log ]; then
-            cat tunnel.log
-          else
-            echo "No tunnel log found."
-          fi
