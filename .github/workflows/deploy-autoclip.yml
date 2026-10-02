@@ -28,12 +28,14 @@ jobs:
           mkdir -p data logs uploads
 
       - name: Verify Docker and Docker Compose
+        working-directory: autoclip
         run: |
           echo "Verifying Docker and Docker Compose..."
           docker --version
           docker compose version
 
       - name: Validate Docker Compose configuration
+        working-directory: autoclip
         run: |
           echo "Validating Docker Compose configuration..."
           docker compose config
