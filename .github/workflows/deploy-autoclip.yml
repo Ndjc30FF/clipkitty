@@ -1,0 +1,115 @@
+name: Deploy Autoclip via Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duration to keep application running (in hours)'
+        required: false
+        default: '2'
+        type: number
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event.inputs.duration * 60 + 30 }}  # Add buffer time
+
+    steps:
+      - name: Checkout autoclip repository
+        uses: actions/checkout@v4
+        with:
+          repository: zhouxiaoka/autoclip
+          path: autoclip
+
+      - name: Set up environment
+        working-directory: autoclip
+        run: |
+          cp env.example .env
+          mkdir -p data logs uploads
+
+      - name: Set up Docker Compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose
+
+      - name: Start application with Docker Compose
+        working-directory: autoclip
+        run: |
+          docker compose up -d
+          # Wait for application to be ready
+          echo "Waiting for application to start..."
+          for i in {1..30}; do
+            if docker compose ps | grep -q "State.*Up"; then
+              echo "Application started successfully"
+              break
+            fi
+            echo "Waiting for application... ($i/30)"
+            sleep 10
+          done
+
+      - name: Install Cloudflare Tunnel (cloudflared)
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared version
+
+      - name: Create tunnel and expose port 3000
+        id: tunnel
+        working-directory: autoclip
+        run: |
+          # Start tunnel in background with nohup
+          nohup cloudflared tunnel --url http://localhost:3000 > tunnel.log 2>&1 &
+          echo $! > tunnel.pid
+
+          # Wait for tunnel to be ready and get the URL
+          echo "Waiting for tunnel to establish..."
+          for i in {1..30}; do
+            if TUNNEL_URL=$(grep -oE 'https://[^ ]+.trycloudflare.com' tunnel.log | head -1); then
+              if [ -n "$TUNNEL_URL" ]; then
+                echo "Tunnel URL: $TUNNEL_URL"
+                break
+              fi
+            fi
+            sleep 1
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Failed to get tunnel URL"
+            cat tunnel.log
+            kill $(cat tunnel.pid)
+            exit 1
+          fi
+
+          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+
+      - name: Display public URL
+        run: |
+          echo "🚀 Autoclip application is now accessible at:"
+          echo "🔗 $TUNNEL_URL"
+          echo "📝 Note: This URL will be valid for the duration of this workflow run."
+
+      - name: Keep application running
+        run: |
+          HOURS=${{ github.event.inputs.duration }}
+          SECONDS=$((HOURS * 3600))
+          echo "Keeping application running for ${HOURS} hour(s)..."
+
+          # Simple heartbeat to show the job is still running
+          for i in $(seq 1 $SECONDS); do
+            if [ $((i % 60)) -eq 0 ]; then
+              echo "⏱️  Application running... [$((i/60)) minutes elapsed]"
+            fi
+            sleep 1
+          done
+
+      - name: Cleanup
+        if: always()
+        working-directory: autoclip
+        run: |
+          echo "Stopping application and cleaning up..."
+          docker compose down
+          if [ -f tunnel.pid ]; then
+            kill $(cat tunnel.pid) || true
+            rm tunnel.pid
+          fi
