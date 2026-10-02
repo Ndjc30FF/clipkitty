@@ -51,7 +51,7 @@ jobs:
         run: |
           echo "Waiting for autoclip service to be ready..."
           for i in {1..30}; do
-            if docker compose exec -T autoclip curl -s -f http://localhost:3000/api/v1/health/ > /dev/null 2>&1; then
+            if docker compose exec -T autoclip curl -s -f http://localhost:8000/api/v1/health/ > /dev/null 2>&1; then
               echo "Autoclip service is ready!"
               break
             fi
@@ -60,7 +60,7 @@ jobs:
           done
 
           # If the loop ended without breaking, then the service is not ready.
-          if ! docker compose exec -T autoclip curl -s -f http://localhost:3000/api/v1/health/ > /dev/null 2>&1; then
+          if ! docker compose exec -T autoclip curl -s -f http://localhost:8000/api/v1/health/ > /dev/null 2>&1; then
             echo "Autoclip service failed to become ready."
             exit 1
           fi
