@@ -27,28 +27,45 @@ jobs:
           cp env.example .env
           mkdir -p data logs uploads
 
-      - name: Set up Docker Compose
+      - name: Verify Docker and Docker Compose
         run: |
-          sudo apt-get update
-          sudo apt-get install -y docker-compose
+          echo "Verifying Docker and Docker Compose..."
+          docker --version
+          docker compose version
+
+      - name: Validate Docker Compose configuration
+        run: |
+          echo "Validating Docker Compose configuration..."
+          docker compose config
 
       - name: Start application with Docker Compose
         working-directory: autoclip
         run: |
+          echo "Starting application with Docker Compose..."
           docker compose up -d
-          # Wait for application to be ready
-          echo "Waiting for application to start..."
+
+      - name: Wait for autoclip service to be ready
+        working-directory: autoclip
+        run: |
+          echo "Waiting for autoclip service to be ready..."
           for i in {1..30}; do
-            if docker compose ps | grep -q "State.*Up"; then
-              echo "Application started successfully"
+            if docker compose exec -T autoclip curl -s -f http://localhost:8000/api/v1/health/ > /dev/null 2>&1; then
+              echo "Autoclip service is ready!"
               break
             fi
-            echo "Waiting for application... ($i/30)"
-            sleep 10
+            echo "Waiting for autoclip service... ($i/30)"
+            sleep 2
           done
+
+          # If the loop ended without breaking, then the service is not ready.
+          if ! docker compose exec -T autoclip curl -s -f http://localhost:8000/api/v1/health/ > /dev/null 2>&1; then
+            echo "Autoclip service failed to become ready."
+            exit 1
+          fi
 
       - name: Install Cloudflare Tunnel (cloudflared)
         run: |
+          echo "Installing Cloudflare Tunnel..."
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
           sudo dpkg -i cloudflared.deb
           cloudflared version
@@ -57,6 +74,7 @@ jobs:
         id: tunnel
         working-directory: autoclip
         run: |
+          echo "Creating Cloudflare Tunnel for port 3000..."
           # Start tunnel in background with nohup
           nohup cloudflared tunnel --url http://localhost:3000 > tunnel.log 2>&1 &
           echo $! > tunnel.pid
@@ -76,7 +94,8 @@ jobs:
           if [ -z "$TUNNEL_URL" ]; then
             echo "Failed to get tunnel URL"
             cat tunnel.log
-            kill $(cat tunnel.pid)
+            kill $(cat tunnel.pid) || true
+            rm -f tunnel.pid
             exit 1
           fi
 
@@ -111,5 +130,23 @@ jobs:
           docker compose down
           if [ -f tunnel.pid ]; then
             kill $(cat tunnel.pid) || true
-            rm tunnel.pid
+            rm -f tunnel.pid
+          fi
+
+      - name: Failure diagnostics
+        if: failure()
+        working-directory: autoclip
+        run: |
+          echo "=== Failure Diagnostics ==="
+          echo "Container status:"
+          docker compose ps -a
+          echo ""
+          echo "Container logs:"
+          docker compose logs --tail=100
+          echo ""
+          echo "Tunnel log (if exists):"
+          if [ -f tunnel.log ]; then
+            cat tunnel.log
+          else
+            echo "No tunnel log found."
           fi
