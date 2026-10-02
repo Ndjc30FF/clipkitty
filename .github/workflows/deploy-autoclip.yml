@@ -12,7 +12,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{github.event.inputs.duration*60+30}}  # Add buffer time
+    timeout-minutes: 1500  # Max 24h + 1h buffer
 
     steps:
       - name: Checkout autoclip repository
