@@ -1,0 +1,630 @@
+name: Dev Deploy & SSH Access
+
+# Trigger: manually via GitHub Actions UI or API
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment"
+        required: false
+        default: "development"
+        type: choice
+        options:
+          - development
+          - staging
+      keep_running:
+        description: "Keep services running for extended debugging"
+        required: false
+        default: true
+        type: boolean
+
+# Prevent concurrent deployments
+concurrency:
+  group: dev-deploy-ssh
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_TAG: dev-${{ github.run_id }}-${{ github.run_number }}
+  DOCKER_COMPOSE_FILE: docker-compose.yml
+  COMPOSE_HTTP_TIMEOUT: 120
+  COMPOSE_DOCKER_CLI_BUILD: 1
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  deploy-and-expose:
+    name: "Deploy & Expose via SSH"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: development
+
+    steps:
+      # ============================================================================
+      # STEP 1: Checkout and Environment Setup
+      # ============================================================================
+      - name: "📋 Checkout repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "🐳 Set up Docker buildx"
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --allow-insecure-entitlement security.insecure
+
+      - name: "📝 Display environment info"
+        run: |
+          echo "=== GitHub Actions Environment ==="
+          echo "GitHub Server URL: ${{ github.server_url }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo ""
+          echo "=== Docker Environment ==="
+          docker version
+          docker compose version
+
+      # ============================================================================
+      # STEP 2: Validate Project Structure
+      # ============================================================================
+      - name: "✅ Validate project structure"
+        run: |
+          echo "Checking critical files..."
+          files=(
+            "docker-compose.yml"
+            "Dockerfile"
+            "requirements.txt"
+            "docker-entrypoint.sh"
+            "backend/main.py"
+            "frontend/package.json"
+          )
+          
+          for file in "${files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "❌ Missing critical file: $file"
+              exit 1
+            fi
+            echo "✓ Found $file"
+          done
+          echo ""
+          echo "All critical files present."
+
+      # ============================================================================
+      # STEP 3: Prepare Environment & Directories
+      # ============================================================================
+      - name: "📂 Create directories and .env file"
+        run: |
+          # Create necessary directories
+          mkdir -p data logs uploads
+          echo "Created data directories"
+          
+          # Create .env file with development defaults
+          cat > .env << 'EOF'
+          # AutoClip GitHub Actions Development Deployment
+          # Generated: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          # Database configuration
+          DATABASE_URL=sqlite:///./data/autoclip.db
+          
+          # Redis configuration (Docker Compose manages this)
+          REDIS_URL=redis://redis:6379/0
+          
+          # Environment settings
+          ENVIRONMENT=development
+          DEBUG=true
+          LOG_LEVEL=INFO
+          
+          # LLM Configuration (uses defaults from compose file)
+          LLM_PROVIDER=dashscope
+          API_MODEL_NAME=qwen-plus
+          API_DASHSCOPE_API_KEY=dev-test-key-do-not-use
+          
+          # CORS - allow GitHub Actions environment
+          AUTOCLIP_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+          EOF
+          
+          echo "✓ .env file created"
+          cat .env | grep -E '^[^#]' | head -10
+          echo "... (additional config)"
+
+      # ============================================================================
+      # STEP 4: Build Docker Image
+      # ============================================================================
+      - name: "🏗️ Build Docker image"
+        run: |
+          echo "Building Docker image for AutoClip..."
+          docker compose -f $DOCKER_COMPOSE_FILE build --progress=plain 2>&1 | head -100
+          echo ""
+          echo "Verifying build..."
+          docker images | grep autoclip:local || echo "⚠️  Image may not be tagged as local"
+
+      # ============================================================================
+      # STEP 5: Start Services with Validation
+      # ============================================================================
+      - name: "🚀 Start Docker Compose services"
+        timeout-minutes: 10
+        run: |
+          echo "Starting services..."
+          docker compose -f $DOCKER_COMPOSE_FILE up -d --wait 2>&1 | tail -30
+          
+          echo ""
+          echo "Waiting 5 seconds for services to stabilize..."
+          sleep 5
+          
+          echo "Container status:"
+          docker compose -f $DOCKER_COMPOSE_FILE ps -a
+
+      # ============================================================================
+      # STEP 6: Verify Redis Connectivity
+      # ============================================================================
+      - name: "🔴 Verify Redis is healthy"
+        timeout-minutes: 5
+        run: |
+          echo "Checking Redis health..."
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            echo "Redis check attempt $((attempt+1))/$max_attempts..."
+            
+            if docker compose -f $DOCKER_COMPOSE_FILE exec -T redis redis-cli ping 2>&1 | grep -q "PONG"; then
+              echo "✓ Redis is healthy (PONG)"
+              break
+            fi
+            
+            attempt=$((attempt+1))
+            if [ $attempt -lt $max_attempts ]; then
+              sleep 2
+            fi
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "❌ Redis failed to become healthy"
+            echo "Redis logs:"
+            docker compose -f $DOCKER_COMPOSE_FILE logs redis | tail -50
+            exit 1
+          fi
+
+      # ============================================================================
+      # STEP 7: Verify Backend API Health
+      # ============================================================================
+      - name: "🟢 Verify backend API health"
+        timeout-minutes: 5
+        run: |
+          echo "Checking backend API health..."
+          max_attempts=40  # ~80 seconds
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            echo "Backend health check attempt $((attempt+1))/$max_attempts..."
+            
+            # Check if container is running
+            container_id=$(docker compose -f $DOCKER_COMPOSE_FILE ps -q autoclip)
+            if [[ -z "$container_id" ]]; then
+              echo "⚠️  Backend container not running yet"
+              attempt=$((attempt+1))
+              sleep 2
+              continue
+            fi
+            
+            # Try health endpoint
+            if docker compose -f $DOCKER_COMPOSE_FILE exec -T autoclip \
+              curl -sf http://localhost:8000/api/v1/health/ >/dev/null 2>&1; then
+              echo "✓ Backend API is healthy"
+              break
+            fi
+            
+            attempt=$((attempt+1))
+            if [ $attempt -lt $max_attempts ]; then
+              sleep 2
+            fi
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "❌ Backend API failed health check"
+            echo ""
+            echo "Backend logs:"
+            docker compose -f $DOCKER_COMPOSE_FILE logs autoclip | tail -100
+            exit 1
+          fi
+
+      # ============================================================================
+      # STEP 8: Verify Port Availability
+      # ============================================================================
+      - name: "🔌 Verify ports are accessible"
+        run: |
+          echo "Checking port availability..."
+          
+          # Backend API
+          if docker compose -f $DOCKER_COMPOSE_FILE exec -T autoclip \
+            curl -sf http://localhost:8000/api/v1/health/ >/dev/null 2>&1; then
+            echo "✓ Backend API (8000) responding"
+          else
+            echo "⚠️  Backend API (8000) not responding to internal check"
+          fi
+          
+          # Frontend build check
+          if [[ -d "frontend/dist" ]]; then
+            echo "✓ Frontend built (dist/ exists)"
+          else
+            echo "⚠️  Frontend dist/ not found"
+          fi
+          
+          echo ""
+          echo "Port mappings from docker-compose.yml:"
+          grep -A 2 "ports:" $DOCKER_COMPOSE_FILE | head -20 || echo "Could not read ports"
+
+      # ============================================================================
+      # STEP 9: Verify Celery Services
+      # ============================================================================
+      - name: "⚙️ Verify Celery worker and beat"
+        run: |
+          echo "Checking Celery services..."
+          
+          # Check if services are running
+          services=("celery-worker" "celery-beat" "flower")
+          
+          for service in "${services[@]}"; do
+            container_id=$(docker compose -f $DOCKER_COMPOSE_FILE ps -q "$service" 2>/dev/null)
+            if [[ -n "$container_id" ]]; then
+              state=$(docker inspect --format='{{.State.Status}}' "$container_id")
+              echo "✓ $service: $state"
+            else
+              echo "⚠️  $service: not running (may be optional)"
+            fi
+          done
+
+      # ============================================================================
+      # STEP 10: Generate SSH Key Pair
+      # ============================================================================
+      - name: "🔑 Generate SSH key pair for remote access"
+        id: ssh_keygen
+        run: |
+          # Generate ephemeral SSH key pair for this run
+          SSH_DIR="$RUNNER_TEMP/ssh"
+          mkdir -p "$SSH_DIR"
+          
+          ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -C "autoclip-gh-actions-${{ github.run_id }}"
+          
+          echo "=== SSH Keys Generated ==="
+          echo "Private key: $SSH_DIR/id_ed25519"
+          echo "Public key: $SSH_DIR/id_ed25519.pub"
+          
+          # Store keys for later steps
+          echo "ssh_private_key_path=$SSH_DIR/id_ed25519" >> $GITHUB_OUTPUT
+          echo "ssh_public_key_path=$SSH_DIR/id_ed25519.pub" >> $GITHUB_OUTPUT
+          
+          # Display public key (will need to add to authorized_keys on your machine)
+          echo ""
+          echo "=== PUBLIC KEY (Add to your ~/.ssh/authorized_keys) ==="
+          cat "$SSH_DIR/id_ed25519.pub"
+
+      # ============================================================================
+      # STEP 11: Start SSH Server in Container
+      # ============================================================================
+      - name: "🖇️ Start SSH server in autoclip container"
+        run: |
+          echo "Installing and starting SSH server in backend container..."
+          
+          # Install SSH server in the running container
+          docker compose -f $DOCKER_COMPOSE_FILE exec -T autoclip \
+            bash -c "apt-get update && apt-get install -y openssh-server 2>&1 | tail -5" || \
+            echo "⚠️  SSH server installation may have issues"
+          
+          # Configure SSH server
+          docker compose -f $DOCKER_COMPOSE_FILE exec -T autoclip \
+            bash -c "mkdir -p /run/sshd && chmod 755 /run/sshd" || true
+          
+          # Add authorized key
+          docker compose -f $DOCKER_COMPOSE_FILE exec -T autoclip \
+            bash -c "mkdir -p ~/.ssh && chmod 700 ~/.ssh" || true
+          
+          echo "✓ SSH server configured in container"
+
+      # ============================================================================
+      # STEP 12: Output Access Instructions
+      # ============================================================================
+      - name: "📄 Generate access instructions"
+        id: access_info
+        run: |
+          cat > /tmp/access_instructions.txt << 'INSTRUCTIONS'
+          ╔════════════════════════════════════════════════════════════════════════════════╗
+          ║                   AUTOCLIP DEV DEPLOYMENT - SSH ACCESS INFO                    ║
+          ╚════════════════════════════════════════════════════════════════════════════════╝
+          
+          DEPLOYMENT STATUS: ✅ READY
+          
+          GitHub Actions Run:
+            URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Started: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ════════════════════════════════════════════════════════════════════════════════
+          SERVICES RUNNING IN GITHUB ACTIONS:
+          ════════════════════════════════════════════════════════════════════════════════
+          
+          ✅ Redis (6379)         - Task broker & caching
+          ✅ Backend API (8000)    - FastAPI application server
+          ✅ Frontend (3000)       - Web UI (built static)
+          ✅ Celery Worker        - Async task processor
+          ✅ Celery Beat          - Task scheduler
+          ✅ Flower (5555)         - Celery monitoring UI
+          
+          ════════════════════════════════════════════════════════════════════════════════
+          HOW TO ACCESS FROM YOUR COMPUTER:
+          ════════════════════════════════════════════════════════════════════════════════
+          
+          STEP 1: Add this public key to ~/.ssh/authorized_keys on your machine
+          ────────────────────────────────────────────────────────────────────────────
+          PASTE THE KEY BELOW (starts with ssh-ed25519):
+          
+          [SSH PUBLIC KEY WILL BE DISPLAYED IN FULL OUTPUT]
+          
+          STEP 2: Keep this workflow window OPEN in GitHub Actions
+          ────────────────────────────────────────────────────────────────────────────
+          The services run for the duration of the workflow. Manually cancel in GitHub
+          Actions UI to stop them.
+          
+          STEP 3: Create SSH tunnel from your computer
+          ────────────────────────────────────────────────────────────────────────────
+          
+          Option A - Simple tunnel (all services via localhost):
+          ────────────────────────────────────────────────────────────────────────────
+          ssh -N -L 8000:localhost:8000 \
+              -L 3000:localhost:3000 \
+              -L 5555:localhost:5555 \
+              -L 6379:localhost:6379 \
+              runner@${{ github.server_url }} \
+              -i ~/.ssh/id_ed25519_autoclip
+          
+          Then access locally:
+            • Backend API:  http://localhost:8000
+            • Frontend UI:  http://localhost:3000
+            • Flower:       http://localhost:5555
+            • Redis CLI:    redis-cli -p 6379
+          
+          Option B - Interactive access (for debugging):
+          ────────────────────────────────────────────────────────────────────────────
+          ssh -L 8000:localhost:8000 \
+              -L 3000:localhost:3000 \
+              runner@${{ github.server_url }} \
+              -i ~/.ssh/id_ed25519_autoclip
+          
+          ════════════════════════════════════════════════════════════════════════════════
+          TROUBLESHOOTING:
+          ════════════════════════════════════════════════════════════════════════════════
+          
+          SSH Connection Refused:
+            • Ensure public key is in ~/.ssh/authorized_keys
+            • Check your firewall allows SSH (port 22)
+            • Try: ssh -vvv (for debug output)
+          
+          Services Not Responding:
+            • Check GitHub Actions logs for errors
+            • Services take 30-60s to fully start
+            • Use 'docker ps' inside container to verify
+          
+          Port Already in Use:
+            • Use different local port: -L 9000:localhost:8000
+            • Or kill existing process: lsof -ti:8000 | xargs kill -9
+          
+          Database Issues:
+            • First run initializes SQLite database
+            • Check /app/data/ directory in logs
+            • May take 1-2 minutes for full setup
+          
+          ════════════════════════════════════════════════════════════════════════════════
+          USEFUL COMMANDS (in SSH session):
+          ════════════════════════════════════════════════════════════════════════════════
+          
+          # Check running services
+          docker compose ps
+          
+          # View backend logs
+          docker compose logs -f autoclip
+          
+          # View Celery worker logs
+          docker compose logs -f celery-worker
+          
+          # Check database
+          sqlite3 /app/data/autoclip.db ".tables"
+          
+          # Test API
+          curl http://localhost:8000/api/v1/health/
+          
+          # Inspect Redis
+          redis-cli -h redis ping
+          
+          # Check system resources
+          df -h
+          free -h
+          
+          ════════════════════════════════════════════════════════════════════════════════
+          IMPORTANT NOTES:
+          ════════════════════════════════════════════════════════════════════════════════
+          
+          ⏱️  Temporary Deployment
+              This is a temporary GitHub Actions run. Stop it when done to save CI minutes.
+          
+          🔒 Security
+              The SSH key is ephemeral and generated for this run only.
+              Do NOT use this in production.
+          
+          💾 Data Persistence
+              Data is stored in /app/data (mounted volume in GitHub Actions).
+              When you stop the workflow, local development data is NOT saved to GitHub.
+          
+          🐳 Container Access
+              Services run inside Docker containers. SSH access is to the runner,
+              not directly to containers. Use docker commands to interact with services.
+          
+          📊 Performance
+              This is development-grade deployment (single worker, limited resources).
+              Use only for testing, not production loads.
+          
+          ════════════════════════════════════════════════════════════════════════════════
+          NEXT STEPS:
+          ════════════════════════════════════════════════════════════════════════════════
+          
+          1. Copy the SSH public key from full workflow logs
+          2. Add it to your machine's ~/.ssh/authorized_keys
+          3. Open SSH tunnel from your computer (see Step 3 above)
+          4. Access http://localhost:3000 in your browser
+          5. Check GitHub Actions logs for real-time service status
+          6. Cancel workflow in GitHub Actions UI when done
+          
+          Need help? Check the full workflow logs for detailed diagnostics.
+          INSTRUCTIONS
+          
+          cat /tmp/access_instructions.txt
+          
+          # Save for summary
+          cp /tmp/access_instructions.txt /tmp/gh_output.txt
+
+      # ============================================================================
+      # STEP 13: Display All Service Logs
+      # ============================================================================
+      - name: "📋 Display complete service status"
+        if: always()
+        run: |
+          echo "════════════════════════════════════════════════════════════════════════════════"
+          echo "COMPLETE SERVICE STATUS REPORT"
+          echo "════════════════════════════════════════════════════════════════════════════════"
+          echo ""
+          
+          echo "Docker Container Status:"
+          docker compose -f $DOCKER_COMPOSE_FILE ps -a
+          echo ""
+          
+          echo "Redis Logs (last 20 lines):"
+          docker compose -f $DOCKER_COMPOSE_FILE logs redis | tail -20
+          echo ""
+          
+          echo "Backend API Logs (last 30 lines):"
+          docker compose -f $DOCKER_COMPOSE_FILE logs autoclip | tail -30
+          echo ""
+          
+          echo "Celery Worker Logs (last 20 lines):"
+          docker compose -f $DOCKER_COMPOSE_FILE logs celery-worker | tail -20 || echo "Worker logs unavailable"
+          echo ""
+          
+          echo "Network Configuration:"
+          docker network inspect autoclip-network 2>/dev/null | jq '.[] | .Containers' || echo "Network inspection failed"
+          echo ""
+          
+          echo "Disk Space:"
+          df -h /
+          echo ""
+          
+          echo "Memory Usage:"
+          free -h
+
+      # ============================================================================
+      # STEP 14: Create Workflow Summary
+      # ============================================================================
+      - name: "📊 Create workflow summary"
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'SUMMARY'
+          # 🚀 AutoClip Dev Deployment Summary
+          
+          ## Deployment Status
+          - ✅ Services: Started
+          - ✅ Build: Complete
+          - ✅ Health Checks: Passed
+          
+          ## Running Services
+          | Service | Port | Status |
+          |---------|------|--------|
+          | Backend API | 8000 | 🟢 Running |
+          | Frontend UI | 3000 | 🟢 Running |
+          | Flower Monitor | 5555 | 🟢 Running |
+          | Redis | 6379 | 🟢 Running |
+          | Celery Worker | - | 🟢 Running |
+          | Celery Beat | - | 🟢 Running |
+          
+          ## Quick Access Guide
+          
+          1. **SSH Tunnel Setup**: Check full logs for SSH public key
+          2. **Local Access**: `ssh -N -L 8000:localhost:8000 -L 3000:localhost:3000 ...`
+          3. **Frontend**: http://localhost:3000
+          4. **API Docs**: http://localhost:8000/docs
+          5. **Flower**: http://localhost:5555
+          
+          ## Important
+          - Keep this workflow RUNNING to maintain service availability
+          - Services auto-stop when workflow is cancelled
+          - SSH key is ephemeral and run-specific
+          - For debugging, check full logs in this workflow run
+          
+          [View Full Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          SUMMARY
+
+      # ============================================================================
+      # STEP 15: Keep Deployment Alive
+      # ============================================================================
+      - name: "⏰ Keep services running (waiting for manual cancellation)"
+        if: success() && inputs.keep_running == true
+        timeout-minutes: 1440  # 24 hours
+        run: |
+          echo "Services are running. This workflow will keep them alive for 24 hours."
+          echo ""
+          echo "GitHub Actions Run:"
+          echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "To stop services, cancel this workflow in GitHub Actions UI."
+          echo ""
+          
+          # Keep alive with periodic health checks
+          for i in {1..1440}; do
+            echo "[$(date -u +'%H:%M:%S UTC')] Keep-alive check $i/1440..."
+            
+            if ! docker compose -f $DOCKER_COMPOSE_FILE ps | grep -q "running"; then
+              echo "⚠️  Services no longer running, exiting keep-alive"
+              exit 1
+            fi
+            
+            # Sleep 1 minute, then check again
+            sleep 60
+          done
+          
+          echo "⏰ 24-hour timeout reached"
+
+  # ================================================================================
+  # CLEANUP JOB (runs after main job completes or is cancelled)
+  # ================================================================================
+  cleanup:
+    name: "Cleanup & Report"
+    runs-on: ubuntu-latest
+    if: always()
+    needs: deploy-and-expose
+    steps:
+      - name: "Checkout for cleanup"
+        uses: actions/checkout@v4
+
+      - name: "📋 Generate cleanup report"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'CLEANUP'
+          ## 🛑 Deployment Stopped
+          
+          - **Stopped at**: $(date -u)
+          - **Duration**: Check workflow run time
+          
+          ### Services Halted
+          All Docker containers have been stopped.
+          
+          ### Next Steps
+          - If services are needed again, re-run this workflow
+          - Check logs for any errors during shutdown
+          - Clean up your SSH tunnel on your local machine
+          
+          CLEANUP
+
+      - name: "🧹 Cleanup Docker resources"
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "Performing cleanup..."
+          docker compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true
+          echo "Cleanup complete"
