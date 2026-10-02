@@ -513,7 +513,164 @@ jobs:
           df -h / | awk 'NR==2'
 
       # ============================================================
-      # 16. KEEP RUNNING (CONFIGURABLE)
+      # 16. INSTALL CLOUDFLARE TUNNEL
+      # ============================================================
+      - name: Install Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "========================================================"
+          echo "INSTALLING CLOUDFLARE TUNNEL"
+          echo "========================================================"
+          echo ""
+
+          # Download cloudflared
+          echo "Downloading cloudflared..."
+          curl -L --output /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb 2>&1 | tail -5
+
+          # Install
+          echo ""
+          echo "Installing cloudflared..."
+          sudo dpkg -i /tmp/cloudflared.deb
+
+          # Verify installation
+          echo ""
+          echo "Verifying installation..."
+          cloudflared version
+
+      # ============================================================
+      # 17. START CLOUDFLARE TUNNELS
+      # ============================================================
+      - name: Start Cloudflare Tunnels
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "========================================================"
+          echo "STARTING CLOUDFLARE TUNNELS"
+          echo "========================================================"
+          echo ""
+
+          # Create log directory
+          mkdir -p /tmp/tunnels
+
+          echo "Starting tunnel for Frontend (port 3000)..."
+          cloudflared tunnel --url http://127.0.0.1:3000 \
+            --http-host-header=127.0.0.1:3000 \
+            > /tmp/tunnels/frontend.log 2>&1 &
+          FRONTEND_PID=$!
+          echo "Frontend tunnel PID: $FRONTEND_PID"
+
+          echo ""
+          echo "Starting tunnel for Backend API (port 8000)..."
+          cloudflared tunnel --url http://127.0.0.1:8000 \
+            --http-host-header=127.0.0.1:8000 \
+            > /tmp/tunnels/backend.log 2>&1 &
+          BACKEND_PID=$!
+          echo "Backend tunnel PID: $BACKEND_PID"
+
+          echo ""
+          echo "Starting tunnel for Flower (port 5555)..."
+          cloudflared tunnel --url http://127.0.0.1:5555 \
+            --http-host-header=127.0.0.1:5555 \
+            > /tmp/tunnels/flower.log 2>&1 &
+          FLOWER_PID=$!
+          echo "Flower tunnel PID: $FLOWER_PID"
+
+          echo ""
+          echo "Waiting for Cloudflare Tunnel to establish connections..."
+          sleep 15
+
+          # Check if tunnels are active
+          if ! kill -0 $FRONTEND_PID 2>/dev/null; then
+            echo "⚠️  Frontend tunnel process died"
+            cat /tmp/tunnels/frontend.log || true
+          fi
+
+          if ! kill -0 $BACKEND_PID 2>/dev/null; then
+            echo "⚠️  Backend tunnel process died"
+            cat /tmp/tunnels/backend.log || true
+          fi
+
+          if ! kill -0 $FLOWER_PID 2>/dev/null; then
+            echo "⚠️  Flower tunnel process died"
+            cat /tmp/tunnels/flower.log || true
+          fi
+
+          echo ""
+          echo "Cloudflare Tunnel processes started"
+
+      # ============================================================
+      # 18. EXTRACT AND DISPLAY TUNNEL URLS
+      # ============================================================
+      - name: Display Public Tunnel URLs
+        shell: bash
+        run: |
+          set +e  # Don't exit on grep failures
+          echo "========================================================"
+          echo "         AUTOCLIP PUBLIC TUNNEL LINKS"
+          echo "========================================================"
+          echo ""
+
+          # Wait for URLs to appear in logs
+          echo "Extracting tunnel URLs (this may take 10-15 seconds)..."
+          sleep 10
+
+          FRONTEND_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnels/frontend.log 2>/dev/null | head -n 1)
+          BACKEND_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnels/backend.log 2>/dev/null | head -n 1)
+          FLOWER_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnels/flower.log 2>/dev/null | head -n 1)
+
+          echo "🌐 PUBLIC TUNNEL LINKS"
+          echo "===================="
+          echo ""
+
+          if [[ -n "$FRONTEND_URL" ]]; then
+            echo "✅ Frontend UI (Open in Browser):"
+            echo "   $FRONTEND_URL"
+          else
+            echo "⏳ Frontend URL: (Generating...)"
+            echo "   Check logs if not appearing"
+          fi
+
+          echo ""
+
+          if [[ -n "$BACKEND_URL" ]]; then
+            echo "✅ Backend API:"
+            echo "   $BACKEND_URL"
+            echo "   API Docs: $BACKEND_URL/docs"
+          else
+            echo "⏳ Backend URL: (Generating...)"
+          fi
+
+          echo ""
+
+          if [[ -n "$FLOWER_URL" ]]; then
+            echo "✅ Flower Monitor:"
+            echo "   $FLOWER_URL"
+          else
+            echo "⏳ Flower URL: (Generating...)"
+          fi
+
+          echo ""
+          echo "========================================================"
+          echo "HOW TO ACCESS"
+          echo "========================================================"
+          echo ""
+          echo "From your browser anywhere in the world:"
+          echo "1. Copy the Frontend URL above"
+          echo "2. Open in your browser (Chrome, Firefox, Safari, Edge)"
+          echo "3. Access AutoClip Web UI"
+          echo ""
+          echo "These URLs are active ONLY while this workflow is running"
+          echo "Closing/cancelling workflow will disable tunnel access"
+          echo ""
+
+          # Save URLs to file for next step
+          echo "FRONTEND_URL=$FRONTEND_URL" > /tmp/tunnel_urls.env
+          echo "BACKEND_URL=$BACKEND_URL" >> /tmp/tunnel_urls.env
+          echo "FLOWER_URL=$FLOWER_URL" >> /tmp/tunnel_urls.env
+
+      # ============================================================
+      # 19. KEEP RUNNING (CONFIGURABLE)
       # ============================================================
       - name: Keep AutoClip Running
         shell: bash
@@ -530,6 +687,8 @@ jobs:
           echo ""
           echo "Services will stay running for $KEEP_RUNNING_MINUTES minutes"
           echo "or until manually cancelled in GitHub Actions"
+          echo ""
+          echo "Cloudflare Tunnels are active - access via public URLs above"
           echo ""
 
           START_TIME=$(date +%s)
@@ -551,11 +710,22 @@ jobs:
               docker compose ps -a
             fi
 
+            # Verify tunnel processes are still running
+            if ! pgrep -f "cloudflared tunnel" > /dev/null; then
+              echo "⚠️  Warning: Cloudflare tunnel processes died"
+              echo "Restarting tunnels..."
+              
+              mkdir -p /tmp/tunnels
+              cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header=127.0.0.1:3000 > /tmp/tunnels/frontend.log 2>&1 &
+              cloudflared tunnel --url http://127.0.0.1:8000 --http-host-header=127.0.0.1:8000 > /tmp/tunnels/backend.log 2>&1 &
+              cloudflared tunnel --url http://127.0.0.1:5555 --http-host-header=127.0.0.1:5555 > /tmp/tunnels/flower.log 2>&1 &
+            fi
+
             sleep $CHECK_INTERVAL
           done
 
       # ============================================================
-      # 17. FAILURE DIAGNOSTICS
+      # 20. FAILURE DIAGNOSTICS
       # ============================================================
       - name: Failure Diagnostics
         if: failure()
@@ -591,7 +761,7 @@ jobs:
           done
 
       # ============================================================
-      # 18. CLEANUP
+      # 21. CLEANUP
       # ============================================================
       - name: Cleanup
         if: always()
