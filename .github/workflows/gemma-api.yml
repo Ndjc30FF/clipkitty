@@ -18,57 +18,48 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Kill Conflicting Services & Start Ollama
+      - name: Start Ollama Server
         run: |
-          # 1. Stop background systemd Ollama service to free port 11434
+          # Kill any auto-started systemd instances to avoid port conflicts
           sudo systemctl stop ollama || true
           sudo fuser -k 11434/tcp || true
           sleep 2
 
-          # 2. Launch Ollama allowing all host origins and remote connections
+          # Enable open CORS and bind address
           export OLLAMA_ORIGINS="*"
           export OLLAMA_HOST="0.0.0.0:11434"
-          ollama serve &
+          nohup ollama serve > ollama.log 2>&1 &
           sleep 5
 
       - name: Pull Gemma Model
         run: |
           ollama pull gemma:2b
 
-      - name: Start Cloudflare Tunnel with Host Header Rewrite
+      - name: Expose via Cloudflare Tunnel
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           if [ -n "$CF_TUNNEL_TOKEN" ]; then
-            echo "Starting Cloudflare Tunnel with Custom Domain..."
             cloudflared tunnel --http-host-header="localhost:11434" run --token "$CF_TUNNEL_TOKEN" &
             TUNNEL_URL="https://your-custom-domain.com"
           else
-            echo "Starting Quick Cloudflare Tunnel..."
-            # --http-host-header forces Cloudflare requests to appear local to Ollama, stopping 403 network blocks
             cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header="localhost:11434" > tunnel.log 2>&1 &
-            
             sleep 12
             TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
           fi
 
           echo "========================================================"
-          echo "MODEL NAME:       gemma:2b"
-          echo "PUBLIC BASE URL:  ${TUNNEL_URL}"
-          echo "ZED BASE URL:     ${TUNNEL_URL}/v1"
+          echo "OLLAMA BASE URL: ${TUNNEL_URL}"
           echo "========================================================"
 
           cat <<EOF >> $GITHUB_STEP_SUMMARY
-          ### 🚀 Gemma API Details for Zed Editor
-
-          #### Settings for Zed:
-          - **Base URL:** \`${TUNNEL_URL}/v1\`
-          - **API format:** \`Chat completions (/chat/completions)\`
-          - **API key:** \`ollama\`
-          - **Model list:** \`gemma:2b\`
+          ### 🚀 Base URL for Zed settings.json:
+          \`\`\`json
+          "api_url": "${TUNNEL_URL}"
+          \`\`\`
           EOF
 
       - name: Keep Runner Alive
         run: |
-          echo "API server is running..."
+          echo "Serving requests..."
           sleep 21600
