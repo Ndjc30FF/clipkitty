@@ -1,0 +1,21 @@
+name: Interactive Shell Environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  shell-environment:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Necessary Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl tmux git jq wget unzip
+
+      # Instant Interactive SSH Session via Upterm
+      - name: Open Live Interactive Shell
+        uses: owenthereal/action-upterm@v1
