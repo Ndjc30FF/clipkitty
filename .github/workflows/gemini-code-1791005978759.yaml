@@ -1,0 +1,31 @@
+name: Interactive Shell Environment
+
+on:
+  workflow_dispatch: # Allows manual trigger from the Actions tab in GitHub
+
+jobs:
+  shell-environment:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repo code into $GITHUB_WORKSPACE
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Step 2: Install tools using Linux package manager (apt)
+      - name: Install Necessary Tools (curl, tmux, build utilities)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl tmux git jq wget unzip
+
+      # Step 3: Verify tool installations
+      - name: Check Installed Tools
+        run: |
+          echo "--- Installed Versions ---"
+          curl --version | head -n 1
+          tmux -V
+          git --version
+
+      # Step 4: Open a live interactive SSH session via tmate
+      - name: Open Live Interactive SSH Shell
+        uses: mxschmitt/action-tmate@v3
