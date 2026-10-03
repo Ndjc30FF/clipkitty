@@ -1,21 +1,35 @@
-name: Interactive Shell Environment
+name: AutoClip Setup & Shell Environment
 
 on:
   workflow_dispatch:
 
 jobs:
-  shell-environment:
+  autoclip-environment:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Necessary Tools
+      # STEP 1: Fully automated system & tool setup
+      - name: Install Node.js, FFmpeg, Python, Curl & Tmux
         run: |
+          echo "=== Step 1: Updating System Packages ==="
           sudo apt-get update
-          sudo apt-get install -y curl tmux git jq wget unzip
 
-      # Instant Interactive SSH Session via Upterm
-      - name: Open Live Interactive Shell
+          echo "=== Step 1: Installing Core Utilities & FFmpeg ==="
+          sudo apt-get install -y ffmpeg git curl python3 python3-pip python3-venv tmux jq wget unzip
+
+          echo "=== Step 1: Installing Node.js 20 ==="
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+
+          echo "=== Step 1: Verifying Installed Tool Versions ==="
+          node -v
+          npm -v
+          ffmpeg -version | head -n 1
+          python3 --version
+
+      # STEP 2: Opens Live Web/SSH Shell for remaining manual tasks
+      - name: Open Interactive Web Terminal
         uses: owenthereal/action-upterm@v1
