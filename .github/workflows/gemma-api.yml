@@ -1,12 +1,12 @@
 name: Run Gemma API via Cloudflare Tunnel
 
 on:
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   run-gemma:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Keeps runner alive up to 6 hours
+    timeout-minutes: 360
 
     steps:
       - name: Checkout Repository
@@ -14,46 +14,92 @@ jobs:
 
       - name: Install Ollama & Cloudflared
         run: |
-          # Install Ollama
           curl -fsSL https://ollama.com/install.sh | sh
-          
-          # Install Cloudflare Tunnel CLI
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
       - name: Start Ollama Server
         run: |
-          # Start Ollama service in the background
           OLLAMA_HOST=0.0.0.0:11434 ollama serve &
           sleep 5
 
       - name: Pull Gemma Model
         run: |
-          # Pull Gemma model (use gemma:2b for default runners, or gemma:7b)
+          # Change to gemma:7b if running on a self-hosted GPU runner
           ollama pull gemma:2b
 
-      - name: Expose via Cloudflare Tunnel
+      - name: Start Cloudflare Tunnel & Output API Details
         env:
-          # Optional: Add your custom Cloudflare Tunnel token in GitHub Secrets as CF_TUNNEL_TOKEN
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           if [ -n "$CF_TUNNEL_TOKEN" ]; then
             echo "Starting Cloudflare Tunnel with Custom Domain..."
             cloudflared tunnel run --token "$CF_TUNNEL_TOKEN" &
+            # Replace with your actual configured custom domain if using tokens
+            TUNNEL_URL="https://your-custom-domain.com"
           else
-            echo "Starting Quick Cloudflare Tunnel (Random URL)..."
+            echo "Starting Quick Cloudflare Tunnel..."
             cloudflared tunnel --url http://localhost:11434 > tunnel.log 2>&1 &
             
-            # Wait for tunnel URL to generate
-            sleep 8
-            echo "------------------------------------------------------"
-            echo "YOUR API CUSTOM URL:"
-            grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log || cat tunnel.log
-            echo "------------------------------------------------------"
+            # Wait for tunnel URL generation
+            sleep 10
+            
+            # Extract generated URL
+            TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
           fi
+
+          # Output connection credentials to Workflow Log & Step Summary
+          echo "========================================================"
+          echo "MODEL NAME:       gemma:2b"
+          echo "PUBLIC BASE URL:  ${TUNNEL_URL}"
+          echo "OPENAI BASE URL:  ${TUNNEL_URL}/v1"
+          echo "NATIVE API URL:  ${TUNNEL_URL}/api"
+          echo "========================================================"
+
+          # Print to GitHub Actions Job Summary Page
+          cat <<EOF >> $GITHUB_STEP_SUMMARY
+          ### 🚀 Gemma API Details
+          - **Model Name:** \`gemma:2b\`
+          - **Public Base URL:** \`${TUNNEL_URL}\`
+          - **OpenAI Compatible Base URL:** \`${TUNNEL_URL}/v1\`
+          - **Native Ollama API Base URL:** \`${TUNNEL_URL}/api\`
+
+          #### 📌 Available API Endpoints & Request Examples:
+
+          **1. Native Generate API (\`/api/generate\`):**
+          \`\`\`bash
+          curl ${TUNNEL_URL}/api/generate \\
+            -H "Content-Type: application/json" \\
+            -d '{
+              "model": "gemma:2b",
+              "prompt": "Hello!",
+              "stream": false
+            }'
+          \`\`\`
+
+          **2. Native Chat API (\`/api/chat\`):**
+          \`\`\`bash
+          curl ${TUNNEL_URL}/api/chat \\
+            -H "Content-Type: application/json" \\
+            -d '{
+              "model": "gemma:2b",
+              "messages": [{"role": "user", "content": "Hello!"}],
+              "stream": false
+            }'
+          \`\`\`
+
+          **3. OpenAI-Compatible Chat API (\`/v1/chat/completions\`):**
+          \`\`\`bash
+          curl ${TUNNEL_URL}/v1/chat/completions \\
+            -H "Content-Type: application/json" \\
+            -d '{
+              "model": "gemma:2b",
+              "messages": [{"role": "user", "content": "Hello!"}]
+            }'
+          \`\`\`
+          EOF
 
       - name: Keep Runner Alive
         run: |
-          echo "Gemma API is live! Waiting..."
-          # Keep step running until timeout
+          echo "API is live and accepting requests..."
           sleep 21600
