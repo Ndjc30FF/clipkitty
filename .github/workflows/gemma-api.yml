@@ -1,10 +1,10 @@
-name: Run Gemma API via Cloudflare Tunnel
+name: Run Ollama API via Cloudflare Tunnel
 
 on:
   workflow_dispatch:
 
 jobs:
-  run-gemma:
+  run-ollama:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -18,48 +18,59 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Start Ollama Server
+      - name: Start Ollama Server with Tool & CORS Support
         run: |
-          # Kill any auto-started systemd instances to avoid port conflicts
+          # Stop default systemd process to clear port 11434
           sudo systemctl stop ollama || true
           sudo fuser -k 11434/tcp || true
           sleep 2
 
-          # Enable open CORS and bind address
+          # Enable open CORS and bind address for remote connections
           export OLLAMA_ORIGINS="*"
           export OLLAMA_HOST="0.0.0.0:11434"
+          
           nohup ollama serve > ollama.log 2>&1 &
           sleep 5
 
-      - name: Pull Gemma Model
+      - name: Pull Tool-Capable Model (Qwen 2.5)
         run: |
-          ollama pull gemma:2b
+          # Pulls qwen2.5:3b which natively supports function/tool calling in Zed
+          ollama pull qwen2.5:3b
 
       - name: Expose via Cloudflare Tunnel
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           if [ -n "$CF_TUNNEL_TOKEN" ]; then
+            echo "Starting Cloudflare Tunnel with Custom Domain..."
             cloudflared tunnel --http-host-header="localhost:11434" run --token "$CF_TUNNEL_TOKEN" &
             TUNNEL_URL="https://your-custom-domain.com"
           else
+            echo "Starting Quick Cloudflare Tunnel..."
+            # --http-host-header prevents Ollama from blocking incoming requests with 403 Forbidden
             cloudflared tunnel --url http://127.0.0.1:11434 --http-host-header="localhost:11434" > tunnel.log 2>&1 &
+            
             sleep 12
             TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
           fi
 
           echo "========================================================"
-          echo "OLLAMA BASE URL: ${TUNNEL_URL}"
+          echo "MODEL NAME:       qwen2.5:3b"
+          echo "PUBLIC BASE URL:  ${TUNNEL_URL}"
+          echo "ZED BASE URL:     ${TUNNEL_URL}/v1"
           echo "========================================================"
 
           cat <<EOF >> $GITHUB_STEP_SUMMARY
-          ### 🚀 Base URL for Zed settings.json:
-          \`\`\`json
-          "api_url": "${TUNNEL_URL}"
-          \`\`\`
+          ### 🚀 Ollama API Details for Zed Editor
+
+          #### Settings for Zed:
+          - **Base URL:** \`${TUNNEL_URL}/v1\`
+          - **API format:** \`Chat completions (/chat/completions)\`
+          - **API key:** \`ollama\`
+          - **Model list:** \`qwen2.5:3b\`
           EOF
 
       - name: Keep Runner Alive
         run: |
-          echo "Serving requests..."
+          echo "API is ready to serve requests..."
           sleep 21600
