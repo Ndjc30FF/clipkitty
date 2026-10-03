@@ -18,88 +18,64 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Start Ollama Server
+      - name: Start Ollama Server with CORS Enabled
         run: |
-          OLLAMA_HOST=0.0.0.0:11434 ollama serve &
+          # OLLAMA_ORIGINS="*" is required so apps like Zed can communicate without CORS/403 blocking
+          OLLAMA_ORIGINS="*" OLLAMA_HOST=0.0.0.0:11434 ollama serve &
           sleep 5
 
       - name: Pull Gemma Model
         run: |
-          # Change to gemma:7b if running on a self-hosted GPU runner
+          # Note: gemma:2b is recommended for standard GitHub runners due to RAM limits
           ollama pull gemma:2b
 
-      - name: Start Cloudflare Tunnel & Output API Details
+      - name: Start Cloudflare Tunnel & Print Connection Config
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           if [ -n "$CF_TUNNEL_TOKEN" ]; then
             echo "Starting Cloudflare Tunnel with Custom Domain..."
             cloudflared tunnel run --token "$CF_TUNNEL_TOKEN" &
-            # Replace with your actual configured custom domain if using tokens
             TUNNEL_URL="https://your-custom-domain.com"
           else
             echo "Starting Quick Cloudflare Tunnel..."
             cloudflared tunnel --url http://localhost:11434 > tunnel.log 2>&1 &
             
-            # Wait for tunnel URL generation
+            # Allow tunnel URL to initialize
             sleep 10
             
-            # Extract generated URL
             TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
           fi
 
-          # Output connection credentials to Workflow Log & Step Summary
           echo "========================================================"
           echo "MODEL NAME:       gemma:2b"
           echo "PUBLIC BASE URL:  ${TUNNEL_URL}"
-          echo "OPENAI BASE URL:  ${TUNNEL_URL}/v1"
-          echo "NATIVE API URL:  ${TUNNEL_URL}/api"
+          echo "ZED / OPENAI URL: ${TUNNEL_URL}/v1"
           echo "========================================================"
 
-          # Print to GitHub Actions Job Summary Page
+          # Output summary to GitHub Job Summary Page
           cat <<EOF >> $GITHUB_STEP_SUMMARY
-          ### 🚀 Gemma API Details
-          - **Model Name:** \`gemma:2b\`
-          - **Public Base URL:** \`${TUNNEL_URL}\`
-          - **OpenAI Compatible Base URL:** \`${TUNNEL_URL}/v1\`
-          - **Native Ollama API Base URL:** \`${TUNNEL_URL}/api\`
+          ### 🚀 Gemma API Details for Zed & External Apps
 
-          #### 📌 Available API Endpoints & Request Examples:
+          #### ⚙️ Configuration for Zed Editor
+          - **Base URL:** \`${TUNNEL_URL}/v1\`
+          - **API format:** \`Chat completions (/chat/completions)\`
+          - **API key:** \`ollama\`
+          - **Model list:** \`gemma:2b\`
 
-          **1. Native Generate API (\`/api/generate\`):**
-          \`\`\`bash
-          curl ${TUNNEL_URL}/api/generate \\
-            -H "Content-Type: application/json" \\
-            -d '{
-              "model": "gemma:2b",
-              "prompt": "Hello!",
-              "stream": false
-            }'
-          \`\`\`
-
-          **2. Native Chat API (\`/api/chat\`):**
-          \`\`\`bash
-          curl ${TUNNEL_URL}/api/chat \\
-            -H "Content-Type: application/json" \\
-            -d '{
-              "model": "gemma:2b",
-              "messages": [{"role": "user", "content": "Hello!"}],
-              "stream": false
-            }'
-          \`\`\`
-
-          **3. OpenAI-Compatible Chat API (\`/v1/chat/completions\`):**
+          ---
+          #### 📌 cURL Test Command:
           \`\`\`bash
           curl ${TUNNEL_URL}/v1/chat/completions \\
             -H "Content-Type: application/json" \\
             -d '{
               "model": "gemma:2b",
-              "messages": [{"role": "user", "content": "Hello!"}]
+              "messages": [{"role": "user", "content": "Hello Gemma!"}]
             }'
           \`\`\`
           EOF
 
       - name: Keep Runner Alive
         run: |
-          echo "API is live and accepting requests..."
+          echo "API is active and serving requests..."
           sleep 21600
