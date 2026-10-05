@@ -22,11 +22,9 @@ jobs:
       - name: Show environment
         run: |
           set -e
-
           echo "=============================================="
           echo "          OPENSHORTS GITHUB ACTION"
           echo "=============================================="
-
           docker --version
           docker compose version
           git rev-parse --short HEAD
@@ -34,146 +32,45 @@ jobs:
       - name: Prepare writable directories
         run: |
           set -e
-
-          mkdir -p output
-          mkdir -p videos
-
-          chmod 777 output
-          chmod 777 videos
-
+          mkdir -p output videos
+          chmod 777 output videos
           echo "Writable host directories prepared."
 
       - name: Create environment
         run: |
           set -e
-
           if [ -f .env.example ]; then
             cp .env.example .env
           else
             touch .env
           fi
-
           echo "Environment file prepared."
 
-      - name: Configure Vite for Cloudflare Tunnel
+      - name: Configure Vite allowedHosts inline
         run: |
           set -e
-
-          echo "=============================================="
-          echo "       CONFIGURING VITE HOST ACCESS"
-          echo "=============================================="
-
           VITE_CONFIG="dashboard/vite.config.js"
-
-          if [ ! -f "$VITE_CONFIG" ]; then
-            echo "ERROR: Vite configuration file not found:"
-            echo "$VITE_CONFIG"
-            exit 1
+          if [ -f "$VITE_CONFIG" ]; then
+            sed -i "s/'www.openshorts.app'/'www.openshorts.app', '.trycloudflare.com'/g" "$VITE_CONFIG"
+            echo "Successfully appended .trycloudflare.com to Vite configuration."
           fi
-
-          echo "Using Vite configuration:"
-          echo "$VITE_CONFIG"
-
-          python3 - "$VITE_CONFIG" <<'PY'
-          import sys
-          from pathlib import Path
-
-          path = Path(sys.argv[1])
-          text = path.read_text()
-
-          print("Original Vite configuration:")
-          print(text)
-
-          if ".trycloudflare.com" in text:
-              print("Cloudflare host is already configured.")
-          else:
-              old = """allowedHosts: [
-        'openshorts.app',
-        'www.openshorts.app'
-      ]"""
-
-              new = """allowedHosts: [
-        'openshorts.app',
-        'www.openshorts.app',
-        '.trycloudflare.com'
-      ]"""
-
-              if old in text:
-                  text = text.replace(old, new, 1)
-              else:
-                  old_single = """allowedHosts: ['openshorts.app', 'www.openshorts.app']"""
-
-                  new_single = """allowedHosts: [
-        'openshorts.app',
-        'www.openshorts.app',
-        '.trycloudflare.com'
-      ]"""
-
-                  if old_single in text:
-                      text = text.replace(old_single, new_single, 1)
-                  else:
-                      raise SystemExit(
-                          "ERROR: Could not find the existing allowedHosts configuration."
-                      )
-
-              path.write_text(text)
-
-              print("Added .trycloudflare.com to Vite allowedHosts.")
-
-          print("==============================================")
-          print("Final Vite configuration:")
-          print("==============================================")
-          print(path.read_text())
-          PY
-
-      - name: Create Docker Compose override
-        run: |
-          set -e
-
-          printf '%s\n' \
-            'services:' \
-            '  backend:' \
-            '    user: "0:0"' \
-            '    volumes:' \
-            '      - .:/app' \
-            '      - backend_uploads:/app/uploads' \
-            '      - backend_output:/app/output' \
-            '      - backend_data:/app/data' \
-            '' \
-            'volumes:' \
-            '  backend_uploads:' \
-            '  backend_output:' \
-            '  backend_data:' \
-            > docker-compose.override.yml
-
-          echo "=============================================="
-          echo "Docker Compose override:"
-          echo "=============================================="
-
-          cat docker-compose.override.yml
 
       - name: Validate Docker Compose
         run: |
           set -e
-
           echo "=============================================="
           echo "       VALIDATING DOCKER COMPOSE"
           echo "=============================================="
-
           docker compose config
-
           echo "Docker Compose configuration is valid."
 
       - name: Build OpenShorts images
         run: |
           set -e
-
           echo "=============================================="
           echo "          BUILDING OPENSHORTS"
           echo "=============================================="
-
           docker compose build --no-cache --progress=plain
-
           echo "=============================================="
           echo "          BUILD COMPLETE"
           echo "=============================================="
@@ -181,13 +78,10 @@ jobs:
       - name: Start OpenShorts
         run: |
           set -e
-
           echo "=============================================="
           echo "          STARTING OPENSHORTS"
           echo "=============================================="
-
           docker compose up -d
-
           echo ""
           echo "Initial container status:"
           docker compose ps
@@ -195,120 +89,81 @@ jobs:
       - name: Verify backend container
         run: |
           set -e
-
           echo "=============================================="
           echo "        VERIFYING BACKEND CONTAINER"
           echo "=============================================="
-
           for i in $(seq 1 90); do
             if docker compose ps backend 2>/dev/null | grep -q "Up"; then
               echo "Backend container is running."
               exit 0
             fi
-
             if [ "$((i % 10))" -eq 0 ]; then
               echo "Backend still starting... ${i}/90"
               docker compose ps
             fi
-
             sleep 2
           done
-
           echo "Backend container failed to stay running."
-
           docker compose ps
           docker compose logs --tail=400 backend
-
           exit 1
-
-      - name: Verify backend writable directories
-        run: |
-          set -e
-
-          echo "=============================================="
-          echo "       VERIFYING BACKEND DIRECTORIES"
-          echo "=============================================="
-
-          docker compose exec -T backend sh -c \
-            'id && ls -ld /app /app/uploads /app/output /app/data && test -d /app/uploads && test -d /app/output && test -d /app/data && test -w /app/uploads && test -w /app/output && test -w /app/data'
-
-          echo "Backend writable directories are OK."
 
       - name: Wait for backend API
         run: |
           set -e
-
           echo "=============================================="
           echo "          WAITING FOR BACKEND API"
           echo "=============================================="
-
           for i in $(seq 1 120); do
-
             if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then
               echo "Backend readiness endpoint is responding."
               exit 0
             fi
-
             if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
               echo "Backend API is responding."
               exit 0
             fi
-
             if [ "$((i % 10))" -eq 0 ]; then
               echo "Backend still starting... ${i}/120"
               docker compose ps
             fi
-
             sleep 2
           done
-
           echo "=============================================="
           echo "          BACKEND FAILED"
           echo "=============================================="
-
           docker compose ps
           docker compose logs --tail=500 backend
-
           exit 1
 
       - name: Verify frontend container
         run: |
           set -e
-
           echo "=============================================="
           echo "        VERIFYING FRONTEND CONTAINER"
           echo "=============================================="
-
           for i in $(seq 1 90); do
             if docker compose ps frontend 2>/dev/null | grep -q "Up"; then
               echo "Frontend container is running."
               exit 0
             fi
-
             if [ "$((i % 10))" -eq 0 ]; then
               echo "Frontend still starting... ${i}/90"
             fi
-
             sleep 2
           done
-
           echo "Frontend container failed."
-
           docker compose ps
           docker compose logs --tail=400 frontend
-
           exit 1
 
       - name: Wait for dashboard
         run: |
           set -e
-
           echo "=============================================="
           echo "          WAITING FOR DASHBOARD"
           echo "=============================================="
-
           for i in $(seq 1 120); do
-
             STATUS=$(curl \
               --connect-timeout 5 \
               --max-time 10 \
@@ -318,74 +173,41 @@ jobs:
               http://127.0.0.1:5175/ || true)
 
             echo "Dashboard check $i: HTTP $STATUS"
-
             if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 500 ]; then
               echo "OpenShorts dashboard is responding."
               exit 0
             fi
-
             sleep 2
           done
-
           echo "=============================================="
           echo "          DASHBOARD FAILED"
           echo "=============================================="
-
           docker compose ps
           docker compose logs --tail=500 frontend
-
           exit 1
-
-      - name: Verify Vite Cloudflare configuration
-        run: |
-          set -e
-
-          echo "=============================================="
-          echo "       VERIFYING VITE CONFIGURATION"
-          echo "=============================================="
-
-          docker compose exec -T frontend sh -c \
-            'find /app -maxdepth 4 -type f \( -name "vite.config.js" -o -name "vite.config.ts" \) -print 2>/dev/null || true'
-
-          echo ""
-          echo "Checking frontend source for Cloudflare host configuration..."
-
-          docker compose exec -T frontend sh -c \
-            'grep -R "\.trycloudflare\.com" /app 2>/dev/null | head -n 20 || true'
-
-          echo ""
-          echo "Vite Cloudflare configuration check completed."
 
       - name: Install Cloudflare Tunnel
         run: |
           set -e
-
           echo "=============================================="
           echo "        INSTALLING CLOUDFLARE TUNNEL"
           echo "=============================================="
-
           curl -L \
             --fail \
             --silent \
             --show-error \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -o cloudflared
-
           chmod +x cloudflared
-
           ./cloudflared --version
 
       - name: Start browser tunnel
         run: |
           set -e
-
           echo "=============================================="
           echo "          STARTING BROWSER TUNNEL"
           echo "=============================================="
-
-          rm -f cloudflare.log
-          rm -f cloudflare.url
-          rm -f cloudflare.pid
+          rm -f cloudflare.log cloudflare.url cloudflare.pid
 
           nohup ./cloudflared tunnel \
             --url http://127.0.0.1:5175 \
@@ -393,23 +215,14 @@ jobs:
             > cloudflare.log 2>&1 &
 
           CLOUDFLARE_PID=$!
-
-          printf '%s\n' "$CLOUDFLARE_PID" > cloudflare.pid
-
-          echo "Cloudflare PID: $CLOUDFLARE_PID"
+          echo "$CLOUDFLARE_PID" > cloudflare.pid
 
           echo "Waiting for Cloudflare URL..."
-
           for i in $(seq 1 60); do
-
             if [ -f cloudflare.log ]; then
-
               URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' cloudflare.log | head -n 1 || true)
-
               if [ -n "$URL" ]; then
-
-                printf '%s\n' "$URL" > cloudflare.url
-
+                echo "$URL" > cloudflare.url
                 echo ""
                 echo "=============================================="
                 echo "          OPENSHORTS IS READY"
@@ -420,43 +233,30 @@ jobs:
                 cat cloudflare.url
                 echo ""
                 echo "=============================================="
-
                 exit 0
               fi
-
             fi
-
             sleep 2
           done
-
           echo "Cloudflare tunnel failed to provide a URL."
-
-          echo ""
-          echo "Cloudflare log:"
           cat cloudflare.log
-
           exit 1
 
       - name: Verify public browser URL
         run: |
           set -e
-
           echo "=============================================="
           echo "       VERIFYING PUBLIC BROWSER URL"
           echo "=============================================="
-
           if [ ! -s cloudflare.url ]; then
             echo "Cloudflare URL was not created."
             exit 1
           fi
 
           URL=$(cat cloudflare.url)
-
-          echo "Public URL:"
-          echo "$URL"
+          echo "Public URL: $URL"
 
           for i in $(seq 1 30); do
-
             STATUS=$(curl \
               --connect-timeout 10 \
               --max-time 20 \
@@ -467,90 +267,62 @@ jobs:
               "$URL" || true)
 
             echo "Attempt $i: HTTP $STATUS"
-
             if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 500 ]; then
               echo ""
               echo "Public dashboard is reachable."
               exit 0
             fi
-
             sleep 3
           done
-
           echo "Public dashboard could not be verified."
-
-          echo ""
-          echo "Cloudflare log:"
           cat cloudflare.log
-
           exit 1
 
       - name: Show final status
         run: |
           set -e
-
           echo ""
           echo "================================================"
           echo "             OPENSHORTS RUNNING"
           echo "================================================"
           echo ""
-
           echo "BROWSER URL:"
           cat cloudflare.url
-
           echo ""
           echo "Local dashboard: http://127.0.0.1:5175"
           echo "Backend:         http://127.0.0.1:8000"
           echo ""
-
-          echo "Docker services:"
           docker compose ps
-
           echo ""
           echo "================================================"
           echo "       KEEP THIS ACTION RUNNING"
           echo "================================================"
-          echo ""
-          echo "Open the BROWSER URL above."
-          echo ""
 
       - name: Keep service alive
         run: |
           set -e
-
           while true; do
-
             echo ""
             echo "------------------------------------------------"
             echo "OpenShorts status:"
             date
             echo "------------------------------------------------"
-
             docker compose ps
-
             echo ""
             echo "Browser URL:"
             cat cloudflare.url
-
             echo ""
-
             sleep 60
-
           done
 
       - name: Cleanup
         if: always()
         run: |
           set +e
-
           echo "Stopping Cloudflare tunnel..."
-
           if [ -f cloudflare.pid ]; then
             kill "$(cat cloudflare.pid)" 2>/dev/null || true
           fi
-
           echo "Stopping OpenShorts..."
-
           docker compose down --remove-orphans
-
           echo "Cleanup complete."
