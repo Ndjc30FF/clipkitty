@@ -63,29 +63,14 @@ jobs:
           echo "       CONFIGURING VITE HOST ACCESS"
           echo "=============================================="
 
-          VITE_CONFIG=""
+          VITE_CONFIG="dashboard/vite.config.js"
 
-          if [ -f vite.config.js ]; then
-            VITE_CONFIG="vite.config.js"
-          elif [ -f vite.config.ts ]; then
-            VITE_CONFIG="vite.config.ts"
-          elif [ -f frontend/vite.config.js ]; then
-            VITE_CONFIG="frontend/vite.config.js"
-          elif [ -f frontend/vite.config.ts ]; then
-            VITE_CONFIG="frontend/vite.config.ts"
-          fi
-
-          if [ -z "$VITE_CONFIG" ]; then
-            echo "ERROR: Vite configuration file not found."
-
-            find . -maxdepth 5 -type f \
-              \( -name "vite.config.js" -o -name "vite.config.ts" \) \
-              -print
-
+          if [ ! -f "$VITE_CONFIG" ]; then
+            echo "ERROR: $VITE_CONFIG not found."
             exit 1
           fi
 
-          echo "Vite config found:"
+          echo "Using:"
           echo "$VITE_CONFIG"
 
           python3 - "$VITE_CONFIG" <<'PY'
@@ -101,7 +86,9 @@ jobs:
               marker = "server: {"
 
               if marker not in text:
-                  print("ERROR: Could not find 'server: {' in Vite config.")
+                  print("ERROR: Could not find 'server: {' in dashboard/vite.config.js")
+                  print("Vite config contents:")
+                  print(text)
                   sys.exit(1)
 
               text = text.replace(
@@ -114,12 +101,9 @@ jobs:
 
               print("Added allowedHosts: true")
 
-          print("Updated Vite configuration:")
+          print("Final Vite configuration:")
           print(path.read_text())
           PY
-
-          echo "Vite configuration completed."
-
       - name: Create Docker Compose override
         run: |
           set -e
