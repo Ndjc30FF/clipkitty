@@ -54,7 +54,6 @@ jobs:
           fi
 
           echo "Environment file prepared."
-          
       - name: Configure Vite for Cloudflare Tunnel
         run: |
           set -e
@@ -70,7 +69,7 @@ jobs:
             exit 1
           fi
 
-          echo "Using:"
+          echo "Found Vite config:"
           echo "$VITE_CONFIG"
 
           python3 - "$VITE_CONFIG" <<'PY'
@@ -80,30 +79,40 @@ jobs:
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          if "allowedHosts" in text:
-              print("allowedHosts already exists.")
-          else:
-              marker = "server: {"
+          old = """allowedHosts: [
+          'openshorts.app',
+          'www.openshorts.app'
+           ]"""
 
-              if marker not in text:
-                  print("ERROR: Could not find 'server: {' in dashboard/vite.config.js")
-                  print("Vite config contents:")
-                  print(text)
-                  sys.exit(1)
+          new = """allowedHosts: [
+          'openshorts.app',
+          'www.openshorts.app',
+          '.trycloudflare.com'
+           ]"""
 
-              text = text.replace(
-                  marker,
-                  "server: {\n      allowedHosts: true,",
-                  1
-              )
+          if "'.trycloudflare.com'" in text:
+              print("Cloudflare host is already allowed.")
 
+          elif old in text:
+              text = text.replace(old, new, 1)
               path.write_text(text)
+              print("Added .trycloudflare.com to allowedHosts.")
 
-              print("Added allowedHosts: true")
+          else:
+              print("ERROR: Existing allowedHosts block was not found.")
+              print("")
+              print("Current Vite configuration:")
+              print(text)
+              sys.exit(1)
 
-          print("Final Vite configuration:")
+          print("")
+          print("Vite configuration after patch:")
+          print("----------------------------------------------")
           print(path.read_text())
+          print("----------------------------------------------")
           PY
+
+          echo "Vite Cloudflare configuration completed."
       - name: Create Docker Compose override
         run: |
           set -e
