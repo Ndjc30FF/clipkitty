@@ -54,10 +54,14 @@ jobs:
           fi
 
           echo "Environment file prepared."
-
+          
       - name: Configure Vite for Cloudflare Tunnel
         run: |
           set -e
+
+          echo "=============================================="
+          echo "       CONFIGURING VITE HOST ACCESS"
+          echo "=============================================="
 
           VITE_CONFIG=""
 
@@ -72,44 +76,49 @@ jobs:
           fi
 
           if [ -z "$VITE_CONFIG" ]; then
-            echo "Could not find vite.config.js or vite.config.ts"
-            find . -maxdepth 4 -iname "vite.config.*" -print
+            echo "ERROR: Vite configuration file not found."
+
+            find . -maxdepth 5 -type f \
+              \( -name "vite.config.js" -o -name "vite.config.ts" \) \
+              -print
+
             exit 1
           fi
 
-          echo "Found Vite configuration:"
+          echo "Vite config found:"
           echo "$VITE_CONFIG"
 
-          cp "$VITE_CONFIG" "${VITE_CONFIG}.original"
-
           python3 - "$VITE_CONFIG" <<'PY'
-import sys
-from pathlib import Path
+          import sys
+          from pathlib import Path
 
-path = Path(sys.argv[1])
-text = path.read_text()
+          path = Path(sys.argv[1])
+          text = path.read_text()
 
-if "allowedHosts" in text:
-    print("allowedHosts already exists.")
-else:
-    marker = "server: {"
+          if "allowedHosts" in text:
+              print("allowedHosts already exists.")
+          else:
+              marker = "server: {"
 
-    if marker in text:
-        replacement = """server: {
-      allowedHosts: true,"""
-        text = text.replace(marker, replacement, 1)
-    else:
-        print("Could not find a server configuration block.")
-        print("Vite config requires manual inspection.")
-        sys.exit(1)
+              if marker not in text:
+                  print("ERROR: Could not find 'server: {' in Vite config.")
+                  sys.exit(1)
 
-    path.write_text(text)
+              text = text.replace(
+                  marker,
+                  "server: {\n      allowedHosts: true,",
+                  1
+              )
 
-print("Vite Cloudflare host configuration applied.")
-PY
+              path.write_text(text)
 
-          echo "Updated Vite config:"
-          cat "$VITE_CONFIG"
+              print("Added allowedHosts: true")
+
+          print("Updated Vite configuration:")
+          print(path.read_text())
+          PY
+
+          echo "Vite configuration completed."
 
       - name: Create Docker Compose override
         run: |
