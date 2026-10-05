@@ -24,14 +24,14 @@ jobs:
           set -e
 
           echo "=============================================="
-          echo "        OPENSHORTS GITHUB ACTION"
+          echo "          OPENSHORTS GITHUB ACTION"
           echo "=============================================="
 
           docker --version
           docker compose version
           git rev-parse --short HEAD
 
-      - name: Prepare directories
+      - name: Prepare writable directories
         run: |
           set -e
 
@@ -41,7 +41,9 @@ jobs:
           chmod 777 output
           chmod 777 videos
 
-      - name: Create runtime environment
+          echo "Writable host directories prepared."
+
+      - name: Create environment
         run: |
           set -e
 
@@ -51,7 +53,32 @@ jobs:
             touch .env
           fi
 
-          echo "Runtime environment prepared."
+          echo "Environment file prepared."
+
+      - name: Create Docker Compose override
+        run: |
+          set -e
+
+          printf '%s\n' \
+            'services:' \
+            '  backend:' \
+            '    volumes:' \
+            '      - .:/app' \
+            '      - backend_uploads:/app/uploads' \
+            '      - backend_output:/app/output' \
+            '      - backend_data:/app/data' \
+            '' \
+            'volumes:' \
+            '  backend_uploads:' \
+            '  backend_output:' \
+            '  backend_data:' \
+            > docker-compose.override.yml
+
+          echo "=============================================="
+          echo "Docker Compose override:"
+          echo "=============================================="
+
+          cat docker-compose.override.yml
 
       - name: Validate Docker Compose
         run: |
@@ -61,67 +88,116 @@ jobs:
 
           echo "Docker Compose configuration is valid."
 
-      - name: Build OpenShorts images
+      - name: Build OpenShorts
         run: |
           set -e
 
           echo "=============================================="
-          echo "        BUILDING OPENSHORTS"
+          echo "          BUILDING OPENSHORTS"
           echo "=============================================="
 
           docker compose build --progress=plain
 
-          echo "=============================================="
-          echo "        BUILD COMPLETE"
-          echo "=============================================="
+          echo "Build completed successfully."
 
       - name: Start OpenShorts
         run: |
           set -e
 
           echo "=============================================="
-          echo "        STARTING OPENSHORTS"
+          echo "          STARTING OPENSHORTS"
           echo "=============================================="
 
           docker compose up -d
 
           echo ""
-          echo "Containers started:"
+          echo "Initial container status:"
           docker compose ps
 
-      - name: Wait for backend
+      - name: Wait for backend container
         run: |
           set -e
 
-          echo "Waiting for backend on port 8000..."
+          echo "Waiting for backend container..."
 
-          for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
-              echo "Backend is responding."
-              exit 0
+          for i in $(seq 1 90); do
+            STATUS=$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null || true)
+
+            echo "$STATUS"
+
+            if docker compose ps backend 2>/dev/null | grep -q "Up"; then
+              echo "Backend container is running."
+              break
             fi
 
-            if [ "$((i % 10))" -eq 0 ]; then
-              echo "Backend still starting... ${i}/120"
+            if [ "$i" -eq 90 ]; then
+              echo "Backend container failed to stay running."
+              docker compose ps
+              docker compose logs --tail=300 backend
+              exit 1
             fi
 
             sleep 2
           done
 
-          echo "Backend failed to become ready."
-          docker compose ps
-          docker compose logs --tail=200 backend
-          exit 1
-
-      - name: Wait for dashboard
+      - name: Verify backend uploads directory
         run: |
           set -e
 
-          echo "Waiting for dashboard on port 5175..."
+          echo "Checking backend writable directories..."
+
+          docker compose exec -T backend sh -c \
+            'id && ls -ld /app /app/uploads /app/output && test -w /app/uploads && test -w /app/output'
+
+          echo "Backend writable directories are OK."
+
+      - name: Wait for backend API
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "          WAITING FOR BACKEND API"
+          echo "=============================================="
+
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then
+              echo "Backend readiness endpoint is responding."
+              exit 0
+            fi
+
+            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
+              echo "Backend API is responding."
+              exit 0
+            fi
+
+            if [ "$((i % 10))" -eq 0 ]; then
+              echo "Backend still starting... ${i}/120"
+              docker compose ps
+            fi
+
+            sleep 2
+          done
+
+          echo "=============================================="
+          echo "          BACKEND FAILED"
+          echo "=============================================="
+
+          docker compose ps
+          docker compose logs --tail=400 backend
+
+          exit 1
+
+      - name: Wait for frontend
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "          WAITING FOR DASHBOARD"
+          echo "=============================================="
 
           for i in $(seq 1 120); do
             if curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1; then
-              echo "Dashboard is responding."
+              echo "OpenShorts dashboard is responding."
               exit 0
             fi
 
@@ -136,6 +212,7 @@ jobs:
 
           docker compose ps
           docker compose logs --tail=300 frontend
+
           exit 1
 
       - name: Install Cloudflare Tunnel
@@ -160,10 +237,12 @@ jobs:
           set -e
 
           echo "=============================================="
-          echo "        STARTING BROWSER ACCESS"
+          echo "          STARTING BROWSER TUNNEL"
           echo "=============================================="
 
-          rm -f cloudflare.log cloudflare.url
+          rm -f cloudflare.log
+          rm -f cloudflare.url
+          rm -f cloudflare.pid
 
           nohup ./cloudflared tunnel \
             --url http://127.0.0.1:5175 \
@@ -174,7 +253,7 @@ jobs:
 
           echo "$CLOUDFLARE_PID" > cloudflare.pid
 
-          echo "Cloudflare process: $CLOUDFLARE_PID"
+          echo "Cloudflare PID: $CLOUDFLARE_PID"
 
           echo "Waiting for public URL..."
 
@@ -183,18 +262,16 @@ jobs:
               URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' cloudflare.log | head -n 1 || true)
 
               if [ -n "$URL" ]; then
-                echo "$URL" > cloudflare.url
+                printf '%s\n' "$URL" > cloudflare.url
 
                 echo ""
                 echo "=============================================="
-                echo "        OPENSHORTS IS READY"
+                echo "          OPENSHORTS IS READY"
                 echo "=============================================="
                 echo ""
-                echo "BROWSER URL:"
-                echo "$URL"
+                echo "OPEN THIS URL IN YOUR BROWSER:"
                 echo ""
-                echo "Dashboard:"
-                echo "$URL/"
+                cat cloudflare.url
                 echo ""
                 echo "=============================================="
 
@@ -205,24 +282,24 @@ jobs:
             sleep 2
           done
 
-          echo "Cloudflare tunnel did not provide a URL."
+          echo "Cloudflare tunnel failed to provide a public URL."
 
           cat cloudflare.log
 
           exit 1
 
-      - name: Verify public tunnel
+      - name: Verify public browser URL
         run: |
           set -e
 
-          if [ ! -f cloudflare.url ]; then
-            echo "Public URL file does not exist."
+          if [ ! -s cloudflare.url ]; then
+            echo "Cloudflare URL was not created."
             exit 1
           fi
 
           URL=$(cat cloudflare.url)
 
-          echo "Testing:"
+          echo "Testing public URL:"
           echo "$URL"
 
           for i in $(seq 1 30); do
@@ -246,52 +323,53 @@ jobs:
             sleep 3
           done
 
-          echo "Public dashboard could not be verified."
+          echo "Public URL could not be verified."
 
           cat cloudflare.log
 
           exit 1
 
-      - name: Keep OpenShorts running
+      - name: Show final status
         run: |
           set -e
 
           echo ""
           echo "================================================"
-          echo "              OPENSHORTS RUNNING"
+          echo "             OPENSHORTS RUNNING"
           echo "================================================"
           echo ""
 
-          if [ -f cloudflare.url ]; then
-            echo "BROWSER URL:"
-            cat cloudflare.url
-          fi
+          echo "BROWSER URL:"
+          cat cloudflare.url
 
           echo ""
           echo "Local dashboard: http://127.0.0.1:5175"
           echo "Backend:         http://127.0.0.1:8000"
           echo ""
 
-          echo "Docker services:"
           docker compose ps
 
           echo ""
-          echo "The workflow will remain running."
-          echo "Open the URL above in your browser."
-          echo ""
+          echo "================================================"
+          echo "   KEEP THIS GITHUB ACTION RUNNING"
+          echo "================================================"
+
+      - name: Keep service alive
+        run: |
+          set -e
 
           while true; do
+            echo ""
             echo "------------------------------------------------"
+            echo "OpenShorts status:"
             date
             echo "------------------------------------------------"
 
             docker compose ps
 
-            if [ -f cloudflare.url ]; then
-              echo ""
-              echo "Browser URL:"
-              cat cloudflare.url
-            fi
+            echo ""
+            echo "Browser URL:"
+            cat cloudflare.url
 
             echo ""
 
