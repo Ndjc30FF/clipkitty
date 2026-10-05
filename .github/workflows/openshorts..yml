@@ -1,0 +1,316 @@
+name: OpenShorts - Browser Accessible
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: openshorts-browser
+  cancel-in-progress: true
+
+jobs:
+  openshorts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Checkout OpenShorts
+        uses: actions/checkout@v4
+        with:
+          repository: mutonby/openshorts
+          fetch-depth: 1
+
+      - name: Show environment
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "        OPENSHORTS GITHUB ACTION"
+          echo "=============================================="
+
+          docker --version
+          docker compose version
+          git rev-parse --short HEAD
+
+      - name: Prepare directories
+        run: |
+          set -e
+
+          mkdir -p output
+          mkdir -p videos
+
+          chmod 777 output
+          chmod 777 videos
+
+      - name: Create runtime environment
+        run: |
+          set -e
+
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          else
+            touch .env
+          fi
+
+          echo "Runtime environment prepared."
+
+      - name: Validate Docker Compose
+        run: |
+          set -e
+
+          docker compose config
+
+          echo "Docker Compose configuration is valid."
+
+      - name: Build OpenShorts images
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "        BUILDING OPENSHORTS"
+          echo "=============================================="
+
+          docker compose build --progress=plain
+
+          echo "=============================================="
+          echo "        BUILD COMPLETE"
+          echo "=============================================="
+
+      - name: Start OpenShorts
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "        STARTING OPENSHORTS"
+          echo "=============================================="
+
+          docker compose up -d
+
+          echo ""
+          echo "Containers started:"
+          docker compose ps
+
+      - name: Wait for backend
+        run: |
+          set -e
+
+          echo "Waiting for backend on port 8000..."
+
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
+              echo "Backend is responding."
+              exit 0
+            fi
+
+            if [ "$((i % 10))" -eq 0 ]; then
+              echo "Backend still starting... ${i}/120"
+            fi
+
+            sleep 2
+          done
+
+          echo "Backend failed to become ready."
+          docker compose ps
+          docker compose logs --tail=200 backend
+          exit 1
+
+      - name: Wait for dashboard
+        run: |
+          set -e
+
+          echo "Waiting for dashboard on port 5175..."
+
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1; then
+              echo "Dashboard is responding."
+              exit 0
+            fi
+
+            if [ "$((i % 10))" -eq 0 ]; then
+              echo "Dashboard still starting... ${i}/120"
+            fi
+
+            sleep 2
+          done
+
+          echo "Dashboard failed to become ready."
+
+          docker compose ps
+          docker compose logs --tail=300 frontend
+          exit 1
+
+      - name: Install Cloudflare Tunnel
+        run: |
+          set -e
+
+          echo "Installing Cloudflare Tunnel..."
+
+          curl -L \
+            --fail \
+            --silent \
+            --show-error \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+
+          chmod +x cloudflared
+
+          ./cloudflared --version
+
+      - name: Start browser tunnel
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "        STARTING BROWSER ACCESS"
+          echo "=============================================="
+
+          rm -f cloudflare.log cloudflare.url
+
+          nohup ./cloudflared tunnel \
+            --url http://127.0.0.1:5175 \
+            --no-autoupdate \
+            > cloudflare.log 2>&1 &
+
+          CLOUDFLARE_PID=$!
+
+          echo "$CLOUDFLARE_PID" > cloudflare.pid
+
+          echo "Cloudflare process: $CLOUDFLARE_PID"
+
+          echo "Waiting for public URL..."
+
+          for i in $(seq 1 60); do
+            if [ -f cloudflare.log ]; then
+              URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' cloudflare.log | head -n 1 || true)
+
+              if [ -n "$URL" ]; then
+                echo "$URL" > cloudflare.url
+
+                echo ""
+                echo "=============================================="
+                echo "        OPENSHORTS IS READY"
+                echo "=============================================="
+                echo ""
+                echo "BROWSER URL:"
+                echo "$URL"
+                echo ""
+                echo "Dashboard:"
+                echo "$URL/"
+                echo ""
+                echo "=============================================="
+
+                exit 0
+              fi
+            fi
+
+            sleep 2
+          done
+
+          echo "Cloudflare tunnel did not provide a URL."
+
+          cat cloudflare.log
+
+          exit 1
+
+      - name: Verify public tunnel
+        run: |
+          set -e
+
+          if [ ! -f cloudflare.url ]; then
+            echo "Public URL file does not exist."
+            exit 1
+          fi
+
+          URL=$(cat cloudflare.url)
+
+          echo "Testing:"
+          echo "$URL"
+
+          for i in $(seq 1 30); do
+            STATUS=$(curl \
+              --connect-timeout 10 \
+              --max-time 20 \
+              -L \
+              -o /dev/null \
+              -s \
+              -w "%{http_code}" \
+              "$URL" || true)
+
+            echo "Attempt $i: HTTP $STATUS"
+
+            if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 500 ]; then
+              echo ""
+              echo "Public dashboard is reachable."
+              exit 0
+            fi
+
+            sleep 3
+          done
+
+          echo "Public dashboard could not be verified."
+
+          cat cloudflare.log
+
+          exit 1
+
+      - name: Keep OpenShorts running
+        run: |
+          set -e
+
+          echo ""
+          echo "================================================"
+          echo "              OPENSHORTS RUNNING"
+          echo "================================================"
+          echo ""
+
+          if [ -f cloudflare.url ]; then
+            echo "BROWSER URL:"
+            cat cloudflare.url
+          fi
+
+          echo ""
+          echo "Local dashboard: http://127.0.0.1:5175"
+          echo "Backend:         http://127.0.0.1:8000"
+          echo ""
+
+          echo "Docker services:"
+          docker compose ps
+
+          echo ""
+          echo "The workflow will remain running."
+          echo "Open the URL above in your browser."
+          echo ""
+
+          while true; do
+            echo "------------------------------------------------"
+            date
+            echo "------------------------------------------------"
+
+            docker compose ps
+
+            if [ -f cloudflare.url ]; then
+              echo ""
+              echo "Browser URL:"
+              cat cloudflare.url
+            fi
+
+            echo ""
+
+            sleep 60
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          set +e
+
+          echo "Stopping Cloudflare tunnel..."
+
+          if [ -f cloudflare.pid ]; then
+            kill "$(cat cloudflare.pid)" 2>/dev/null || true
+          fi
+
+          echo "Stopping OpenShorts..."
+
+          docker compose down --remove-orphans
+
+          echo "Cleanup complete."
