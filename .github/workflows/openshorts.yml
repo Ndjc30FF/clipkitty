@@ -32,6 +32,13 @@ jobs:
       - name: Prepare writable directories
         run: |
           set -e
+          mkdir -p output videos uploads
+          chmod -R 777 output videos uploads
+          echo "Writable host directories prepared."
+
+      - name: Prepare writable directories
+        run: |
+          set -e
           mkdir -p output videos
           chmod 777 output videos
           echo "Writable host directories prepared."
